@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>팀별 선착순 접수 · 200명 추첨</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg: #14161b;
+    --panel: #1c1f26;
+    --led-amber: #ffb627;
+    --led-red: #ff5c5c;
+    --led-green: #43d9a3;
+    --paper: #f0e8d4;
+    --ink: #221d14;
+    --ink-soft: #6b6255;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:
+      radial-gradient(circle at 20% -10%, #23283566 0%, transparent 50%),
+      radial-gradient(circle at 100% 0%, #1f2a2555 0%, transparent 45%),
+      var(--bg);
+    color:#e9e6dd;
+    font-family:'Noto Sans KR', sans-serif;
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    padding:20px 14px 60px;
+  }
+  .digits{font-family:'Chakra Petch', monospace;}
+  .wrap{width:100%;max-width:420px;}
+
+  .board{
+    background:var(--panel);
+    border:1px solid #2c303a;
+    border-radius:14px;
+    padding:18px 18px 16px;
+    position:relative;
+    overflow:hidden;
+    box-shadow: inset 0 0 40px #00000055, 0 8px 24px #00000066;
+  }
+  .eyebrow{font-size:11px;letter-spacing:.18em;color:var(--led-green);text-transform:uppercase;font-weight:700;display:flex;align-items:center;gap:6px;}
+  .eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--led-green);box-shadow:0 0 8px var(--led-green);}
+  .title{font-size:19px;font-weight:900;margin:6px 0 4px;letter-spacing:-0.01em;}
+  .datestr{font-size:12px;color:#8f8a7c;margin-bottom:14px;}
+  .counter-row{display:flex;align-items:baseline;justify-content:space-between;background:#0e0f13;border-radius:10px;padding:14px 16px;border:1px solid #2c303a;}
+  .counter-num{font-size:36px;font-weight:700;color:var(--led-amber);text-shadow:0 0 14px #ffb62755, 0 0 2px #ffb627;}
+  .counter-num span.total{color:#5a5546;font-size:22px;margin-left:2px;}
+  .counter-label{font-size:12px;color:#8f8a7c;text-align:right;line-height:1.5;}
+  .subrow{display:flex;justify-content:space-between;margin-top:10px;font-size:12px;color:#a7a196;}
+  .subrow b{color:var(--led-amber);font-weight:700;}
+
+  .card{background:var(--panel);border:1px solid #2c303a;border-radius:14px;padding:22px 18px;margin-top:14px;}
+  .card h2{font-size:15px;margin:0 0 12px;color:#e9e6dd;font-weight:700;}
+  .field{margin-bottom:12px;}
+  .field label{display:block;font-size:12px;color:#a7a196;margin-bottom:6px;}
+  input[type=text], input[type=number], input[type=password], input[type=time]{
+    width:100%;background:#0e0f13;border:1px solid #33384280;color:#e9e6dd;border-radius:8px;
+    padding:12px 12px;font-size:15px;font-family:inherit;outline:none;
+  }
+  input:focus{border-color:var(--led-amber);}
+  .btn{width:100%;padding:14px;border-radius:9px;border:none;font-size:15px;font-weight:700;cursor:pointer;font-family:'Noto Sans KR', sans-serif;}
+  .btn:active{transform:scale(0.98);}
+  .btn-primary{background:var(--led-amber);color:#221a06;}
+  .btn-primary:disabled{background:#4a4638;color:#8a8578;cursor:not-allowed;}
+  .btn-ghost{background:transparent;border:1px solid #3a3f4a;color:#c8c3b6;margin-top:8px;}
+  .btn-danger{background:var(--led-red);color:#2a0808;}
+  .helper{font-size:12px;color:#79746a;margin-top:8px;line-height:1.5;}
+  .msg{font-size:13px;padding:10px 12px;border-radius:8px;margin-top:10px;background:#2a2416;color:var(--led-amber);border:1px solid #4a3f22;}
+
+  .pulse-wrap{display:flex;align-items:center;justify-content:center;gap:10px;padding:26px 0 10px;}
+  .pulse{width:10px;height:10px;border-radius:50%;background:var(--led-amber);animation:pulse 1.2s infinite ease-in-out;}
+  .pulse:nth-child(2){animation-delay:.2s;} .pulse:nth-child(3){animation-delay:.4s;}
+  @keyframes pulse{0%,80%,100%{opacity:.25; transform:scale(0.8);}40%{opacity:1; transform:scale(1);}}
+  .waiting-txt{text-align:center;font-size:13px;color:#a7a196;padding-bottom:6px;}
+
+  /* Ticket with daily watermark */
+  .ticket{
+    margin-top:16px;
+    background:var(--paper);
+    color:var(--ink);
+    border-radius:4px;
+    padding:26px 20px 20px;
+    position:relative;
+    overflow:hidden;
+    box-shadow:0 10px 30px #00000066;
+    border-top:5px solid var(--dayhue, #cf9f3f);
+  }
+  .ticket::before, .ticket::after{
+    content:"";position:absolute; left:0; right:0; height:14px;
+    background:
+      radial-gradient(circle 7px at 10px 7px, var(--bg) 99%, transparent 100%) repeat-x,
+      radial-gradient(circle 7px at 30px 7px, var(--bg) 99%, transparent 100%) repeat-x;
+    background-size:20px 14px;
+  }
+  .ticket::before{top:-1px;} .ticket::after{bottom:-1px; transform:rotate(180deg);}
+  .watermark{
+    position:absolute; inset:0; overflow:hidden; pointer-events:none;
+    display:flex; flex-direction:column; justify-content:space-evenly;
+  }
+  .watermark div{
+    white-space:nowrap; font-size:13px; font-weight:700; letter-spacing:.15em;
+    transform:rotate(-18deg) scale(1.4); opacity:0.16;
+    color:var(--dayhue, #cf9f3f);
+  }
+  .t-content{position:relative;z-index:1;}
+  .t-eyebrow{font-size:11px;letter-spacing:.16em;color:var(--ink-soft);text-transform:uppercase;font-weight:700;text-align:center;}
+  .t-stamp{text-align:center;font-size:24px;font-weight:900;margin:10px 0 4px;letter-spacing:.02em;}
+  .t-stamp.win{color:#a3752a;} .t-stamp.lose{color:#8b3b3b;}
+  .t-num{text-align:center;font-size:52px;font-weight:700;margin:6px 0 2px;color:var(--ink);}
+  .t-sub{text-align:center;font-size:13px;color:var(--ink-soft);margin-bottom:14px;}
+  .t-divider{border-top:1px dashed #22201866; margin:14px 0;}
+  .t-row{display:flex;justify-content:space-between;font-size:12px;color:var(--ink-soft);padding:3px 0;}
+  .t-row b{color:var(--ink);font-weight:700;}
+  .t-note{margin-top:14px;font-size:12.5px;line-height:1.6;color:var(--ink);background:#00000010;border-radius:6px;padding:10px 12px;}
+  .daychip{
+    display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700;
+    padding:4px 10px; border-radius:20px; background:var(--dayhue,#cf9f3f); color:#1c1400;
+    position:absolute; top:14px; right:14px; z-index:2;
+  }
+
+  /* Full-screen result ticket */
+  .ticket-full{
+    position:fixed; inset:0; z-index:80;
+    margin:0; border-radius:0;
+    padding:env(safe-area-inset-top,0) 24px env(safe-area-inset-bottom,0);
+    display:flex; flex-direction:column; justify-content:center; align-items:stretch;
+    overflow-y:auto;
+  }
+  .ticket-full .t-content{width:100%; max-width:520px; margin:0 auto;}
+  .ticket-full .t-date-big{
+    text-align:center; font-weight:700; letter-spacing:.04em;
+    font-size:clamp(16px, 5vw, 22px); color:var(--ink-soft); margin-bottom:6px;
+  }
+  .ticket-full .t-stamp{
+    font-size:clamp(28px, 9vw, 44px); margin:4px 0 8px;
+  }
+  .ticket-full .t-num{
+    font-size:clamp(72px, 32vw, 190px);
+    line-height:1; margin:4px 0 6px;
+  }
+  .ticket-full .t-sub{ font-size:clamp(14px, 4vw, 17px); margin-bottom:20px; }
+  .ticket-full .t-team{
+    text-align:center; font-weight:900; color:var(--ink);
+    font-size:clamp(28px, 9vw, 46px); line-height:1.15; margin-bottom:8px; word-break:keep-all;
+  }
+  .ticket-full .t-count{
+    text-align:center; font-weight:700; color:var(--ink);
+    font-size:clamp(22px, 6.5vw, 34px); margin-bottom:22px;
+  }
+  .ticket-full .t-divider{ margin:18px 0; }
+  .ticket-full .t-row{ font-size:clamp(12px, 3.6vw, 15px); padding:5px 0; }
+  .ticket-full .t-note{ font-size:clamp(12px, 3.4vw, 14.5px); margin-top:18px; }
+  .ticket-full .daychip{ font-size:clamp(11px, 3vw, 13px); padding:6px 14px; }
+  .ticket-close{
+    position:absolute; top:14px; left:14px; z-index:3;
+    background:#00000018; border:none; color:var(--ink); font-size:13px; font-weight:700;
+    padding:6px 12px; border-radius:20px; cursor:pointer;
+  }
+
+  .list-toggle{display:block;text-align:center;font-size:13px;color:#a7a196;margin-top:16px;cursor:pointer;text-decoration:underline;text-underline-offset:3px;}
+  .list-panel{margin-top:10px;background:var(--panel);border:1px solid #2c303a;border-radius:12px;padding:14px;max-height:340px;overflow-y:auto;}
+  .list-head{font-size:11px;color:#79746a;display:flex;padding:0 4px 8px;border-bottom:1px solid #2c303a;margin-bottom:4px;}
+  .list-head span:nth-child(1){width:34px;}
+  .list-head span:nth-child(2){flex:1;}
+  .list-head span:nth-child(3){width:44px;text-align:right;}
+  .list-row{display:flex;gap:10px;align-items:center;padding:7px 4px;font-size:13px;border-bottom:1px solid #2c303a55;}
+  .list-row:last-child{border-bottom:none;}
+  .list-row .n{font-family:'Chakra Petch',monospace;font-weight:700;color:var(--led-amber);width:34px;flex-shrink:0;}
+  .list-row .nm{color:#d8d4c8;flex:1;}
+  .list-row .ct{color:#a7a196;width:44px;text-align:right;}
+  .list-empty{font-size:12px;color:#79746a;text-align:center;padding:14px 0;}
+
+  .admin-toggle{text-align:center;font-size:11px;color:#4a4638;margin-top:26px;cursor:pointer;}
+  .admin-panel{margin-top:10px;border:1px dashed #3a3f4a;border-radius:12px;padding:14px;background:#181a20;}
+  .admin-panel h3{font-size:13px;margin:0 0 10px;color:#c8c3b6;}
+  .admin-row{display:flex;gap:8px;margin-bottom:10px;}
+  .admin-row input{flex:1;}
+  .small-btn{padding:10px 12px;font-size:13px;border-radius:7px;}
+  .admin-status{font-size:12px;color:#8f8a7c;margin-top:6px;line-height:1.6;}
+
+  footer{margin-top:30px;font-size:11px;color:#3f3c34;text-align:center;line-height:1.6;}
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <div class="board">
+    <div class="eyebrow"><span class="dot"></span><span id="statusLabel">접수 중</span></div>
+    <div class="title">팀별 선착순 접수 · 사다리 추첨</div>
+    <div class="datestr" id="dateStr">-</div>
+    <div class="counter-row">
+      <div class="counter-num digits" id="countNum">0<span class="total">/200</span></div>
+      <div class="counter-label">누적 인원<br>당첨 정원 <span id="winCapLabel">120</span>명</div>
+    </div>
+    <div class="subrow"><span>접수 팀 수 <b id="teamCount">0</b>팀</span><span>마감 <b id="deadlineText">11:00</b></span></div>
+  </div>
+
+  <div id="mainArea"></div>
+  <div id="listToggleArea"></div>
+  <div class="admin-toggle" id="adminToggleBtn">관리자</div>
+  <div id="adminArea"></div>
+
+  <footer>참여 현황과 추첨 결과는 이 페이지를 여는 모든 사람에게 동일하게 공유됩니다. 매일 자정 기준 새 접수가 시작됩니다.</footer>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.0/firebase-app.js";
+import {
+  getDatabase, ref, get, set, push, onValue, runTransaction
+} from "https://www.gstatic.com/firebasejs/12.17.0/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAYsIb9HUyIOCYrBvGCEcvcCHDfZ6CHkLk",
+  authDomain: "gen-lang-client-0475437247.firebaseapp.com",
+  databaseURL: "https://gen-lang-client-0475437247-default-rtdb.firebaseio.com",
+  projectId: "gen-lang-client-0475437247",
+  storageBucket: "gen-lang-client-0475437247.firebasestorage.app",
+  messagingSenderId: "334305902694",
+  appId: "1:334305902694:web:8e0d352810cdcd9b49ada7"
+};
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+
+const CAP_DEFAULT = 200;
+const WINCAP_DEFAULT = 120;
+
+let state = {
+  date: null,
+  teams: [],
+  draw: null,
+  config: { startHour: 9, startMinute: 0, hour: 11, minute: 0, cap: CAP_DEFAULT, winCap: WINCAP_DEFAULT },
+  adminEditingUntil: 0,
+  myEntry: null,
+  listOpen: false,
+  adminOpen: false,
+  adminUnlocked: false,
+  busy: false,
+  errorMsg: null
+};
+
+function todayStr(){
+  const d = new Date();
+  const p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+}
+function escapeHTML(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function fmtDateTime(iso){
+  if(!iso) return '-';
+  const d = new Date(iso);
+  const p = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}.${p(d.getMonth()+1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function hueForDate(dateStr){
+  let h = 0;
+  for(let i=0;i<dateStr.length;i++){ h = (h*31 + dateStr.charCodeAt(i)) % 360; }
+  return h;
+}
+function todayDeadline(dateStr, cfg){
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setHours(cfg.hour, cfg.minute, 0, 0);
+  return d;
+}
+function todayStart(dateStr, cfg){
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setHours(cfg.startHour, cfg.startMinute, 0, 0);
+  return d;
+}
+
+function myEntryKey(date){ return 'ladder-team-my-entry-' + date; }
+function loadMyEntryLocal(date){
+  try{ const raw = localStorage.getItem(myEntryKey(date)); return raw ? JSON.parse(raw) : null; }
+  catch(e){ return null; }
+}
+function saveMyEntryLocal(date, entry){
+  try{ localStorage.setItem(myEntryKey(date), JSON.stringify(entry)); } catch(e){}
+}
+function clearMyEntryLocal(date){
+  try{ localStorage.removeItem(myEntryKey(date)); } catch(e){}
+}
+
+let unsubTeams = null, unsubDraw = null, unsubConfig = null;
+
+function attachDateListeners(date){
+  if(unsubTeams) unsubTeams();
+  if(unsubDraw) unsubDraw();
+  unsubTeams = onValue(ref(db, `teams/${date}`), (snap) => {
+    const val = snap.val() || {};
+    state.teams = Object.entries(val).map(([id, v]) => ({ id, ...v }));
+    render();
+    maybeRunDraw();
+  });
+  unsubDraw = onValue(ref(db, `draw/${date}`), (snap) => {
+    state.draw = snap.val();
+    render();
+  });
+}
+
+function attachConfigListener(){
+  if(unsubConfig) unsubConfig();
+  unsubConfig = onValue(ref(db, 'config'), (snap) => {
+    state.config = snap.val() || { startHour: 9, startMinute: 0, hour: 11, minute: 0, cap: CAP_DEFAULT, winCap: WINCAP_DEFAULT };
+    render();
+  });
+}
+
+function switchToDate(date){
+  state.date = date;
+  state.teams = [];
+  state.draw = null;
+  state.myEntry = loadMyEntryLocal(date);
+  attachDateListeners(date);
+  render();
+}
+
+function loadAll(){
+  switchToDate(todayStr());
+  attachConfigListener();
+}
+
+function totalCount(teams){ return teams.reduce((s,t)=>s+t.count, 0); }
+
+let drawInFlight = false;
+async function maybeRunDraw(){
+  const nowDate = todayStr();
+  if(nowDate !== state.date){ switchToDate(nowDate); return; }
+  if(state.draw || drawInFlight) return;
+  const sum = totalCount(state.teams);
+  const dl = todayDeadline(state.date, state.config);
+  const deadlinePassed = Date.now() >= dl.getTime();
+  if(sum >= state.config.cap || (deadlinePassed && state.teams.length > 0)){
+    await runDraw();
+  }
+}
+
+async function runDraw(){
+  drawInFlight = true;
+  try{
+    const lockRef = ref(db, `drawLock/${state.date}`);
+    const lockResult = await runTransaction(lockRef, (current) => current ? undefined : true);
+    if(!lockResult.committed) return;
+
+    const snap = await get(ref(db, `teams/${state.date}`));
+    const val = snap.val() || {};
+    let list = Object.entries(val).map(([id, v]) => ({ id, ...v }));
+    list.sort((a,b)=>a.ts-b.ts);
+
+    const ids = list.map(t=>t.id);
+    for(let i = ids.length - 1; i > 0; i--){
+      const j = Math.floor(Math.random() * (i+1));
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+    }
+    const byId = {}; list.forEach(t => byId[t.id] = t);
+    const winners = [];
+    let running = 0;
+    ids.forEach(id => {
+      const t = byId[id];
+      if(running + t.count <= state.config.winCap){
+        running += t.count;
+        winners.push({ id, order: winners.length + 1, count: t.count });
+      }
+    });
+
+    const result = { date: state.date, drawnAt: new Date().toISOString(), winners, winTotal: running };
+    await set(ref(db, `draw/${state.date}`), result);
+  } finally {
+    drawInFlight = false;
+  }
+}
+
+async function handleJoin(teamName, count){
+  teamName = (teamName || '').trim().slice(0, 24);
+  count = parseInt(count, 10);
+  state.errorMsg = null;
+
+  if(!teamName){ state.errorMsg = '팀명을 입력해주세요.'; render(); return; }
+  if(!count || count < 1){ state.errorMsg = '인원수를 정확히 입력해주세요.'; render(); return; }
+
+  const st = todayStart(state.date, state.config);
+  if(Date.now() < st.getTime()){ state.errorMsg = `오늘 접수는 ${String(state.config.startHour).padStart(2,'0')}:${String(state.config.startMinute).padStart(2,'0')}부터 시작됩니다.`; render(); return; }
+
+  const dl = todayDeadline(state.date, state.config);
+  if(Date.now() >= dl.getTime()){ state.errorMsg = '오늘 접수가 마감되었습니다.'; render(); return; }
+
+  state.busy = true; render();
+
+  try{
+    const cap = state.config.cap;
+    const totalsRef = ref(db, `totals/${state.date}`);
+    const txResult = await runTransaction(totalsRef, (current) => {
+      current = current || 0;
+      if(current + count > cap) return;
+      return current + count;
+    });
+
+    if(!txResult.committed){
+      const snap = await get(totalsRef);
+      const cur = snap.val() || 0;
+      const remaining = cap - cur;
+      state.errorMsg = remaining <= 0
+        ? `정원 ${cap}명이 마감되었습니다.`
+        : `잔여 인원(${remaining}명)보다 신청 인원이 많습니다.`;
+    } else {
+      const newRef = push(ref(db, `teams/${state.date}`));
+      await set(newRef, { team: teamName, count, ts: Date.now() });
+      state.myEntry = { id: newRef.key, team: teamName, count };
+      saveMyEntryLocal(state.date, state.myEntry);
+    }
+  } catch(e){
+    state.errorMsg = '접수 중 문제가 발생했습니다. 다시 시도해주세요.';
+  }
+
+  state.busy = false;
+  render();
+  await maybeRunDraw();
+}
+
+async function forceDraw(){ if(!state.draw) await runDraw(); }
+
+async function saveConfig(startHour, startMinute, hour, minute, cap, winCap){
+  const cfg = { startHour, startMinute, hour, minute, cap, winCap };
+  await set(ref(db, 'config'), cfg);
+  state.config = cfg;
+  state.configMsg = '저장되었습니다.';
+  state.adminEditingUntil = 0;
+  render();
+}
+
+async function resetToday(){
+  await Promise.all([
+    set(ref(db, `teams/${state.date}`), null),
+    set(ref(db, `draw/${state.date}`), null),
+    set(ref(db, `totals/${state.date}`), null),
+    set(ref(db, `drawLock/${state.date}`), null)
+  ]);
+  clearMyEntryLocal(state.date);
+  state.teams = []; state.draw = null; state.myEntry = null;
+  render();
+}
+
+function myResult(){
+  if(!state.draw || !state.myEntry) return null;
+  const w = state.draw.winners.find(w => w.id === state.myEntry.id);
+  if(!w) return { win:false };
+  return { win:true, order: w.order, count: w.count };
+}
+
+function render(fromPoll){
+  document.getElementById('dateStr').textContent = state.date + ' 접수분';
+  document.getElementById('countNum').innerHTML = totalCount(state.teams) + '<span class="total">/' + state.config.cap + '</span>';
+  document.getElementById('teamCount').textContent = state.teams.length;
+  document.getElementById('deadlineText').textContent = String(state.config.hour).padStart(2,'0') + ':' + String(state.config.minute).padStart(2,'0');
+  document.getElementById('winCapLabel').textContent = state.config.winCap;
+
+  const statusLabel = document.getElementById('statusLabel');
+  const dot = document.querySelector('.eyebrow .dot');
+  if(state.draw){
+    statusLabel.textContent = '추첨 완료';
+    dot.style.background = 'var(--led-amber)'; dot.style.boxShadow = '0 0 8px var(--led-amber)';
+  } else if(totalCount(state.teams) >= state.config.cap){
+    statusLabel.textContent = '마감';
+    dot.style.background = 'var(--led-red)'; dot.style.boxShadow = '0 0 8px var(--led-red)';
+  } else {
+    statusLabel.textContent = '접수 중';
+    dot.style.background = 'var(--led-green)'; dot.style.boxShadow = '0 0 8px var(--led-green)';
+  }
+
+  renderMain(fromPoll);
+  renderListToggle();
+  renderAdmin();
+}
+
+function watermarkHTML(){
+  const label = state.date.replace(/-/g,'.') + '  ' + state.date.replace(/-/g,'.');
+  const rows = Array(6).fill(0).map(()=> `<div>${escapeHTML(label)}</div>`).join('');
+  return `<div class="watermark">${rows}</div>`;
+}
+
+function renderMain(fromPoll){
+  const el = document.getElementById('mainArea');
+  const result = myResult();
+  const hue = hueForDate(state.date);
+  const hueColor = `hsl(${hue}, 62%, 46%)`;
+
+  if(state.draw && state.myEntry && result){
+    if(state.ticketFull === false){
+      el.innerHTML = ticketCompactHTML(result, hueColor);
+      const btn = document.getElementById('ticketExpandBtn');
+      if(btn) btn.onclick = () => { state.ticketFull = true; render(); };
+    } else {
+      el.innerHTML = ticketHTML(result, hueColor);
+      const btn = document.getElementById('ticketCloseBtn');
+      if(btn) btn.onclick = () => { state.ticketFull = false; render(); };
+    }
+    return;
+  }
+  if(state.draw && !state.myEntry){
+    el.innerHTML = `<div class="card"><h2>오늘 접수는 마감·추첨되었습니다</h2>
+      <p class="helper">아래에서 전체 당첨 팀 명단을 확인하실 수 있습니다.</p></div>`;
+    return;
+  }
+  if(state.myEntry && !state.draw){
+    el.innerHTML = `<div class="card">
+      <h2>접수 완료 · ${escapeHTML(state.myEntry.team)} (${state.myEntry.count}명)</h2>
+      <div class="pulse-wrap"><div class="pulse"></div><div class="pulse"></div><div class="pulse"></div></div>
+      <div class="waiting-txt">정원이 차거나 ${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}가 되면 자동으로 추첨됩니다.<br>이 창을 열어두시면 결과가 바로 표시돼요.</div>
+    </div>`;
+    return;
+  }
+  const st = todayStart(state.date, state.config);
+  if(Date.now() < st.getTime()){
+    el.innerHTML = `<div class="card"><h2>접수 시작 전입니다</h2>
+      <p class="helper">오늘 접수는 ${String(state.config.startHour).padStart(2,'0')}:${String(state.config.startMinute).padStart(2,'0')}부터 ${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}까지 진행됩니다.</p></div>`;
+    return;
+  }
+  const dl = todayDeadline(state.date, state.config);
+  if(Date.now() >= dl.getTime()){
+    el.innerHTML = `<div class="card"><h2>오늘 접수가 마감되었습니다</h2>
+      <p class="helper">${state.teams.length > 0 ? '잠시 후 추첨 결과가 반영됩니다.' : '오늘 접수된 팀이 없습니다.'}</p></div>`;
+    return;
+  }
+  if(totalCount(state.teams) >= state.config.cap){
+    el.innerHTML = `<div class="card"><h2>정원이 마감되었습니다</h2><p class="helper">잠시 후 추첨 결과가 반영됩니다.</p></div>`;
+    return;
+  }
+
+  // Once the form is mounted, never rebuild it while it's the active view —
+  // only patch the dynamic bits (button state, error message). This makes
+  // typed input immune to background refreshes, regardless of timing.
+  if(document.getElementById('teamInput') && el.dataset.view === 'form'){
+    const btn = document.getElementById('joinBtn');
+    if(btn){ btn.disabled = state.busy; btn.textContent = state.busy ? '접수 중...' : '접수하기'; }
+    let msgEl = document.getElementById('regMsg');
+    if(state.errorMsg){
+      if(!msgEl){
+        msgEl = document.createElement('div');
+        msgEl.className = 'msg';
+        msgEl.id = 'regMsg';
+        document.getElementById('joinBtn').insertAdjacentElement('afterend', msgEl);
+      }
+      msgEl.textContent = state.errorMsg;
+    } else if(msgEl){
+      msgEl.remove();
+    }
+    return;
+  }
+
+  el.dataset.view = 'form';
+  el.innerHTML = `
+    <div class="card">
+      <h2>팀 접수</h2>
+      <div class="field"><label for="teamInput">팀명</label>
+        <input type="text" id="teamInput" placeholder="예: 총무팀" maxlength="24"></div>
+      <div class="field"><label for="countInput">인원수</label>
+        <input type="number" id="countInput" placeholder="예: 5" min="1"></div>
+      <button class="btn btn-primary" id="joinBtn" ${state.busy?'disabled':''}>${state.busy?'접수 중...':'접수하기'}</button>
+      ${state.errorMsg ? `<div class="msg" id="regMsg">${escapeHTML(state.errorMsg)}</div>` : ''}
+      <div class="helper">오늘 ${String(state.config.startHour).padStart(2,'0')}:${String(state.config.startMinute).padStart(2,'0')}부터 ${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}까지 팀명·인원수로 접수, 누적 ${state.config.cap}명 선착순. 마감 시 ${state.config.winCap}명 한도로 사다리 방식 무작위 추첨됩니다.</div>
+    </div>`;
+
+  document.getElementById('joinBtn').onclick = () => {
+    handleJoin(document.getElementById('teamInput').value, document.getElementById('countInput').value);
+  };
+}
+
+function ticketHTML(result, hueColor){
+  const entry = state.myEntry;
+  const wm = watermarkHTML();
+  const dayChip = `<div class="daychip">${state.date}</div>`;
+  const closeBtn = `<button class="ticket-close" id="ticketCloseBtn">축소</button>`;
+  if(result.win){
+    return `<div class="ticket ticket-full" style="--dayhue:${hueColor}">${wm}${dayChip}${closeBtn}
+      <div class="t-content">
+        <div class="t-eyebrow">Team Admission</div>
+        <div class="t-date-big">${state.date}</div>
+        <div class="t-stamp win">당첨</div>
+        <div class="t-num digits">${String(result.order).padStart(3,'0')}</div>
+        <div class="t-sub">입장 순번</div>
+        <div class="t-team">${escapeHTML(entry.team)}</div>
+        <div class="t-count">${result.count}명</div>
+        <div class="t-divider"></div>
+        <div class="t-row"><span>추첨 일시</span><b>${fmtDateTime(state.draw.drawnAt)}</b></div>
+        <div class="t-note">오늘(${state.date}) 자 티켓입니다. 배경 워터마크 날짜와 상단 색상 칩이 매일 바뀌니, 입장 시 오늘 날짜와 색이 맞는지 함께 확인해주세요.</div>
+      </div></div>`;
+  }
+  return `<div class="ticket ticket-full" style="--dayhue:${hueColor}">${wm}${dayChip}${closeBtn}
+    <div class="t-content">
+      <div class="t-eyebrow">Team Admission</div>
+      <div class="t-date-big">${state.date}</div>
+      <div class="t-stamp lose">낙첨</div>
+      <div class="t-team">${escapeHTML(entry.team)}</div>
+      <div class="t-count">${entry.count}명</div>
+      <div class="t-sub">아쉽게도 당첨되지 않았습니다</div>
+      <div class="t-divider"></div>
+      <div class="t-note">다음 기회에 다시 참여해주세요.</div>
+    </div></div>`;
+}
+
+function ticketCompactHTML(result, hueColor){
+  const entry = state.myEntry;
+  const wm = watermarkHTML();
+  const dayChip = `<div class="daychip">${state.date}</div>`;
+  const expandBtn = `<button class="ticket-close" id="ticketExpandBtn">크게 보기</button>`;
+  if(result.win){
+    return `<div class="ticket" style="--dayhue:${hueColor}">${wm}${dayChip}${expandBtn}
+      <div class="t-content">
+        <div class="t-eyebrow">Team Admission</div>
+        <div class="t-stamp win">당첨</div>
+        <div class="t-num digits">${String(result.order).padStart(3,'0')}</div>
+        <div class="t-sub">입장 순번</div>
+        <div class="t-divider"></div>
+        <div class="t-row"><span>팀명</span><b>${escapeHTML(entry.team)}</b></div>
+        <div class="t-row"><span>인원</span><b>${result.count}명</b></div>
+        <div class="t-row"><span>날짜</span><b>${state.date}</b></div>
+        <div class="t-row"><span>추첨 일시</span><b>${fmtDateTime(state.draw.drawnAt)}</b></div>
+      </div></div>`;
+  }
+  return `<div class="ticket" style="--dayhue:${hueColor}">${wm}${dayChip}${expandBtn}
+    <div class="t-content">
+      <div class="t-eyebrow">Team Admission</div>
+      <div class="t-stamp lose">낙첨</div>
+      <div class="t-sub">아쉽게도 당첨되지 않았습니다</div>
+      <div class="t-divider"></div>
+      <div class="t-row"><span>팀명</span><b>${escapeHTML(entry.team)}</b></div>
+      <div class="t-row"><span>인원</span><b>${entry.count}명</b></div>
+      <div class="t-row"><span>날짜</span><b>${state.date}</b></div>
+    </div></div>`;
+}
+
+function renderListToggle(){
+  const el = document.getElementById('listToggleArea');
+  if(!state.draw){ el.innerHTML=''; return; }
+  el.innerHTML = `<div class="list-toggle" id="toggleListBtn">${state.listOpen?'명단 닫기':'전체 당첨 팀 명단 보기'}</div>` +
+    (state.listOpen ? listPanelHTML() : '');
+  const btn = document.getElementById('toggleListBtn');
+  if(btn) btn.onclick = () => { state.listOpen = !state.listOpen; render(); };
+}
+
+function listPanelHTML(){
+  const teamById = {}; state.teams.forEach(t => teamById[t.id] = t.team);
+  const rows = state.draw.winners.map(w => {
+    const nm = teamById[w.id] || '(알 수 없음)';
+    return `<div class="list-row"><span class="n digits">${String(w.order).padStart(3,'0')}</span><span class="nm">${escapeHTML(nm)}</span><span class="ct">${w.count}명</span></div>`;
+  }).join('');
+  return `<div class="list-panel">
+    <div class="list-head"><span>순번</span><span>팀명</span><span>인원</span></div>
+    ${rows || '<div class="list-empty">당첨 팀이 없습니다.</div>'}
+    <div class="helper" style="margin-top:8px;">${state.date} 접수분 · 총 당첨 ${state.draw.winTotal}명 · 추첨 ${fmtDateTime(state.draw.drawnAt)}</div>
+  </div>`;
+}
+
+function renderAdmin(){
+  const toggleBtn = document.getElementById('adminToggleBtn');
+  toggleBtn.onclick = () => { state.adminOpen = !state.adminOpen; render(); };
+  const el = document.getElementById('adminArea');
+  if(!state.adminOpen){ el.innerHTML=''; return; }
+
+  if(!state.adminUnlocked){
+    el.innerHTML = `<div class="admin-panel"><h3>관리자 확인</h3>
+      <div class="admin-row"><input type="password" id="adminPass" placeholder="관리자 코드">
+      <button class="btn btn-primary small-btn" id="adminUnlockBtn" style="width:auto;">확인</button></div>
+      ${state.adminErr ? `<div class="msg">${escapeHTML(state.adminErr)}</div>` : ''}
+      <div class="admin-status">간단한 화면 잠금이며 보안 인증이 아닙니다.</div></div>`;
+    const tryUnlock = () => {
+      const v = document.getElementById('adminPass').value.trim();
+      if(v === '2478'){ state.adminUnlocked = true; state.adminErr = null; render(); }
+      else { state.adminErr = '코드가 올바르지 않습니다.'; render(); }
+    };
+    document.getElementById('adminUnlockBtn').onclick = tryUnlock;
+    document.getElementById('adminPass').addEventListener('keydown', (e) => {
+      if(e.key === 'Enter') tryUnlock();
+    });
+    return;
+  }
+
+  // If the admin is actively typing (within the last ~5s), skip rebuilding
+  // the form so in-progress edits aren't wiped by the background poll.
+  const editingGuardActive = Date.now() < (state.adminEditingUntil || 0) && document.getElementById('capInput');
+  if(editingGuardActive){
+    const statusEl = el.querySelector('.admin-status');
+    if(statusEl) statusEl.textContent = `오늘(${state.date}) 누적 ${totalCount(state.teams)}/${state.config.cap}명 · ${state.teams.length}팀 · ${state.draw ? '추첨 완료' : '접수 중'}`;
+    return;
+  }
+
+  el.innerHTML = `<div class="admin-panel"><h3>운영 설정</h3>
+    <div class="admin-status">오늘(${state.date}) 누적 ${totalCount(state.teams)}/${state.config.cap}명 · ${state.teams.length}팀 · ${state.draw ? '추첨 완료' : '접수 중'}</div>
+    <div class="field" style="margin-top:10px;"><label>매일 신청 시작 시각</label>
+      <input type="time" id="startInput" value="${String(state.config.startHour).padStart(2,'0')}:${String(state.config.startMinute).padStart(2,'0')}"></div>
+    <div class="field"><label>매일 마감 시각</label>
+      <input type="time" id="deadlineInput" value="${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}"></div>
+    <div class="field"><label>전체 접수 정원 (선착순 인원)</label>
+      <input type="number" id="capInput" min="1" value="${state.config.cap}"></div>
+    <div class="field"><label>당첨 인원 (추첨으로 뽑을 인원)</label>
+      <input type="number" id="winCapInput" min="1" value="${state.config.winCap}"></div>
+    <button class="btn btn-ghost small-btn" id="saveDeadlineBtn">설정 저장 (매일 적용)</button>
+    ${state.configMsg ? `<div class="msg">${escapeHTML(state.configMsg)}</div>` : ''}
+    <div class="admin-status">입력 중에는 약 5초간 화면이 자동 새로고침되지 않습니다. 그 사이 "설정 저장"을 눌러 확정해주세요. 정원·당첨 인원 변경은 오늘 이후 접수부터 적용되며, 이미 접수된 팀·완료된 추첨에는 영향을 주지 않습니다.</div>
+
+    ${state.confirmForceDraw ? `
+      <div class="msg">현재 접수 기준으로 즉시 추첨합니다. 되돌릴 수 없어요. 진행할까요?</div>
+      <button class="btn btn-danger small-btn" id="forceDrawYes" style="margin-top:6px;">예, 지금 추첨</button>
+      <button class="btn btn-ghost small-btn" id="forceDrawNo" style="margin-top:6px;">취소</button>
+    ` : `<button class="btn btn-danger small-btn" id="forceDrawBtn" style="margin-top:10px;" ${state.draw?'disabled':''}>${state.draw?'이미 추첨됨':'지금 즉시 추첨'}</button>`}
+
+    ${state.confirmReset ? `
+      <div class="msg">오늘 접수·추첨 결과를 모두 삭제합니다. 진행할까요?</div>
+      <button class="btn btn-danger small-btn" id="resetYes" style="margin-top:6px;">예, 초기화</button>
+      <button class="btn btn-ghost small-btn" id="resetNo" style="margin-top:6px;">취소</button>
+    ` : `<button class="btn btn-ghost small-btn" id="resetBtn" style="margin-top:10px;">오늘 접수 초기화</button>`}
+  </div>`;
+
+  // typing in any config field extends the 5s edit-grace window
+  ['startInput','deadlineInput','capInput','winCapInput'].forEach(id => {
+    const elInput = document.getElementById(id);
+    if(elInput) elInput.addEventListener('input', () => { state.adminEditingUntil = Date.now() + 5000; });
+  });
+
+  document.getElementById('saveDeadlineBtn').onclick = () => {
+    const sv = document.getElementById('startInput').value.split(':');
+    const v = document.getElementById('deadlineInput').value.split(':');
+    const cap = parseInt(document.getElementById('capInput').value, 10);
+    const winCap = parseInt(document.getElementById('winCapInput').value, 10);
+    if(!cap || cap < 1 || !winCap || winCap < 1){
+      state.configMsg = '정원과 당첨 인원은 1 이상의 숫자로 입력해주세요.';
+      state.adminEditingUntil = 0;
+      render();
+      return;
+    }
+    if(winCap > cap){
+      state.configMsg = '당첨 인원은 전체 정원보다 클 수 없습니다.';
+      state.adminEditingUntil = 0;
+      render();
+      return;
+    }
+    const startMinutesTotal = parseInt(sv[0],10)*60 + parseInt(sv[1],10);
+    const endMinutesTotal = parseInt(v[0],10)*60 + parseInt(v[1],10);
+    if(startMinutesTotal >= endMinutesTotal){
+      state.configMsg = '신청 시작 시각은 마감 시각보다 빨라야 합니다.';
+      state.adminEditingUntil = 0;
+      render();
+      return;
+    }
+    saveConfig(parseInt(sv[0],10), parseInt(sv[1],10), parseInt(v[0],10), parseInt(v[1],10), cap, winCap);
+  };
+
+  if(state.confirmForceDraw){
+    document.getElementById('forceDrawYes').onclick = () => { state.confirmForceDraw = false; forceDraw(); };
+    document.getElementById('forceDrawNo').onclick = () => { state.confirmForceDraw = false; render(); };
+  } else {
+    const btn = document.getElementById('forceDrawBtn');
+    if(btn) btn.onclick = () => { state.confirmForceDraw = true; render(); };
+  }
+
+  if(state.confirmReset){
+    document.getElementById('resetYes').onclick = () => { state.confirmReset = false; resetToday(); };
+    document.getElementById('resetNo').onclick = () => { state.confirmReset = false; render(); };
+  } else {
+    document.getElementById('resetBtn').onclick = () => { state.confirmReset = true; render(); };
+  }
+}
+
+loadAll();
+// Real-time updates arrive via the onValue listeners above. This interval only
+// (a) detects a new day rolling over, and (b) checks whether the deadline
+// time has passed even when no new registration triggers a data change.
+setInterval(() => {
+  const nowDate = todayStr();
+  if(nowDate !== state.date){ switchToDate(nowDate); return; }
+  if(!state.draw) maybeRunDraw();
+}, 5000);
+</script>
+</body>
+</html>
