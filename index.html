@@ -59,11 +59,12 @@
   .card h2{font-size:15px;margin:0 0 12px;color:#e9e6dd;font-weight:700;}
   .field{margin-bottom:12px;}
   .field label{display:block;font-size:12px;color:#a7a196;margin-bottom:6px;}
-  input[type=text], input[type=number], input[type=password], input[type=time]{
+  input[type=text], input[type=number], input[type=password], input[type=time], select{
     width:100%;background:#0e0f13;border:1px solid #33384280;color:#e9e6dd;border-radius:8px;
     padding:12px 12px;font-size:15px;font-family:inherit;outline:none;
   }
-  input:focus{border-color:var(--led-amber);}
+  select{ appearance:auto; }
+  input:focus, select:focus{border-color:var(--led-amber);}
   .btn{width:100%;padding:14px;border-radius:9px;border:none;font-size:15px;font-weight:700;cursor:pointer;font-family:'Noto Sans KR', sans-serif;}
   .btn:active{transform:scale(0.98);}
   .btn-primary{background:var(--led-amber);color:#221a06;}
@@ -141,17 +142,18 @@
     font-size:clamp(28px, 9vw, 44px); margin:4px 0 8px;
   }
   .ticket-full .t-num{
-    font-size:clamp(72px, 32vw, 190px);
+    font-size:clamp(48px, 19vw, 108px);
     line-height:1; margin:4px 0 6px;
+    white-space:nowrap;
   }
   .ticket-full .t-sub{ font-size:clamp(14px, 4vw, 17px); margin-bottom:20px; }
   .ticket-full .t-team{
     text-align:center; font-weight:900; color:var(--ink);
-    font-size:clamp(28px, 9vw, 46px); line-height:1.15; margin-bottom:8px; word-break:keep-all;
+    font-size:clamp(34px, 12vw, 58px); line-height:1.15; margin-bottom:10px; word-break:keep-all;
   }
   .ticket-full .t-count{
     text-align:center; font-weight:700; color:var(--ink);
-    font-size:clamp(22px, 6.5vw, 34px); margin-bottom:22px;
+    font-size:clamp(28px, 9vw, 44px); margin-bottom:22px;
   }
   .ticket-full .t-divider{ margin:18px 0; }
   .ticket-full .t-row{ font-size:clamp(12px, 3.6vw, 15px); padding:5px 0; }
@@ -166,12 +168,12 @@
   .list-toggle{display:block;text-align:center;font-size:13px;color:#a7a196;margin-top:16px;cursor:pointer;text-decoration:underline;text-underline-offset:3px;}
   .list-panel{margin-top:10px;background:var(--panel);border:1px solid #2c303a;border-radius:12px;padding:14px;max-height:340px;overflow-y:auto;}
   .list-head{font-size:11px;color:#79746a;display:flex;padding:0 4px 8px;border-bottom:1px solid #2c303a;margin-bottom:4px;}
-  .list-head span:nth-child(1){width:34px;}
+  .list-head span:nth-child(1){width:74px;}
   .list-head span:nth-child(2){flex:1;}
   .list-head span:nth-child(3){width:44px;text-align:right;}
   .list-row{display:flex;gap:10px;align-items:center;padding:7px 4px;font-size:13px;border-bottom:1px solid #2c303a55;}
   .list-row:last-child{border-bottom:none;}
-  .list-row .n{font-family:'Chakra Petch',monospace;font-weight:700;color:var(--led-amber);width:34px;flex-shrink:0;}
+  .list-row .n{font-family:'Chakra Petch',monospace;font-weight:700;color:var(--led-amber);width:74px;flex-shrink:0;font-size:12px;}
   .list-row .nm{color:#d8d4c8;flex:1;}
   .list-row .ct{color:#a7a196;width:44px;text-align:right;}
   .list-empty{font-size:12px;color:#79746a;text-align:center;padding:14px 0;}
@@ -208,6 +210,7 @@
   <footer>참여 현황과 추첨 결과는 이 페이지를 여는 모든 사람에게 동일하게 공유됩니다. 매일 자정 기준 새 접수가 시작됩니다.</footer>
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.0/firebase-app.js";
 import {
@@ -234,7 +237,9 @@ let state = {
   teams: [],
   draw: null,
   config: { startHour: 9, startMinute: 0, hour: 11, minute: 0, cap: CAP_DEFAULT, winCap: WINCAP_DEFAULT },
-  adminEditingUntil: 0,
+  roster: { entries: [] },
+  rosterPreview: null,
+  rosterUploadMsg: null,
   myEntry: null,
   listOpen: false,
   adminOpen: false,
@@ -285,7 +290,7 @@ function clearMyEntryLocal(date){
   try{ localStorage.removeItem(myEntryKey(date)); } catch(e){}
 }
 
-let unsubTeams = null, unsubDraw = null, unsubConfig = null;
+let unsubTeams = null, unsubDraw = null, unsubConfig = null, unsubRoster = null;
 
 function attachDateListeners(date){
   if(unsubTeams) unsubTeams();
@@ -310,6 +315,14 @@ function attachConfigListener(){
   });
 }
 
+function attachRosterListener(){
+  if(unsubRoster) unsubRoster();
+  unsubRoster = onValue(ref(db, 'roster'), (snap) => {
+    state.roster = snap.val() || { entries: [] };
+    render();
+  });
+}
+
 function switchToDate(date){
   state.date = date;
   state.teams = [];
@@ -322,6 +335,7 @@ function switchToDate(date){
 function loadAll(){
   switchToDate(todayStr());
   attachConfigListener();
+  attachRosterListener();
 }
 
 function totalCount(teams){ return teams.reduce((s,t)=>s+t.count, 0); }
@@ -362,10 +376,14 @@ async function runDraw(){
     ids.forEach(id => {
       const t = byId[id];
       if(running + t.count <= state.config.winCap){
+        const start = running + 1;
         running += t.count;
-        winners.push({ id, order: winners.length + 1, count: t.count });
+        const end = running;
+        winners.push({ id, start, end, count: t.count });
       }
     });
+    // keep display order = the order teams were fit in (matches start ascending)
+    winners.sort((a,b)=>a.start-b.start);
 
     const result = { date: state.date, drawnAt: new Date().toISOString(), winners, winTotal: running };
     await set(ref(db, `draw/${state.date}`), result);
@@ -374,13 +392,27 @@ async function runDraw(){
   }
 }
 
-async function handleJoin(teamName, count){
-  teamName = (teamName || '').trim().slice(0, 24);
+async function handleJoin(selector, count){
   count = parseInt(count, 10);
   state.errorMsg = null;
 
-  if(!teamName){ state.errorMsg = '팀명을 입력해주세요.'; render(); return; }
+  const rosterEntries = (state.roster && state.roster.entries) || [];
+  const useRoster = rosterEntries.length > 0;
+
+  let teamName, deptKey = null, maxAllowed = null;
+  if(useRoster){
+    const entry = rosterEntries.find(en => en.key === selector);
+    if(!entry){ state.errorMsg = '부서·팀을 선택해주세요.'; render(); return; }
+    teamName = `${entry.dept} ${entry.team}`;
+    deptKey = entry.key;
+    maxAllowed = entry.max;
+  } else {
+    teamName = (selector || '').trim().slice(0, 24);
+    if(!teamName){ state.errorMsg = '팀명을 입력해주세요.'; render(); return; }
+  }
+
   if(!count || count < 1){ state.errorMsg = '인원수를 정확히 입력해주세요.'; render(); return; }
+  if(maxAllowed && count > maxAllowed){ state.errorMsg = `이 부서·팀은 최대 ${maxAllowed}명까지만 신청할 수 있습니다.`; render(); return; }
 
   const st = todayStart(state.date, state.config);
   if(Date.now() < st.getTime()){ state.errorMsg = `오늘 접수는 ${String(state.config.startHour).padStart(2,'0')}:${String(state.config.startMinute).padStart(2,'0')}부터 시작됩니다.`; render(); return; }
@@ -391,6 +423,18 @@ async function handleJoin(teamName, count){
   state.busy = true; render();
 
   try{
+    // duplicate check against the freshest team list (race-safety net —
+    // the dropdown already filters out taken departments in normal use)
+    const teamsSnap = await get(ref(db, `teams/${state.date}`));
+    const existing = Object.values(teamsSnap.val() || {});
+    const dup = useRoster
+      ? existing.find(t => t.deptKey === deptKey)
+      : existing.find(t => t.team.trim().toLowerCase() === teamName.toLowerCase());
+    if(dup){
+      state.errorMsg = useRoster ? '이미 접수된 부서·팀입니다.' : '이미 접수된 팀명입니다. 팀당 한 번만 신청할 수 있어요.';
+      state.busy = false; render(); return;
+    }
+
     const cap = state.config.cap;
     const totalsRef = ref(db, `totals/${state.date}`);
     const txResult = await runTransaction(totalsRef, (current) => {
@@ -408,7 +452,9 @@ async function handleJoin(teamName, count){
         : `잔여 인원(${remaining}명)보다 신청 인원이 많습니다.`;
     } else {
       const newRef = push(ref(db, `teams/${state.date}`));
-      await set(newRef, { team: teamName, count, ts: Date.now() });
+      const payload = { team: teamName, count, ts: Date.now() };
+      if(deptKey) payload.deptKey = deptKey;
+      await set(newRef, payload);
       state.myEntry = { id: newRef.key, team: teamName, count };
       saveMyEntryLocal(state.date, state.myEntry);
     }
@@ -428,7 +474,52 @@ async function saveConfig(startHour, startMinute, hour, minute, cap, winCap){
   await set(ref(db, 'config'), cfg);
   state.config = cfg;
   state.configMsg = '저장되었습니다.';
-  state.adminEditingUntil = 0;
+  render();
+}
+
+function sanitizeExcelCell(v){
+  return String(v == null ? '' : v).trim();
+}
+
+function parseRosterFile(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try{
+        const data = new Uint8Array(e.target.result);
+        const wb = window.XLSX.read(data, { type: 'array' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = window.XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true });
+        const entries = [];
+        rows.forEach((row) => {
+          if(!row || row.length < 3) return;
+          const dept = sanitizeExcelCell(row[0]);
+          const team = sanitizeExcelCell(row[1]);
+          const max = parseInt(row[2], 10);
+          if(!dept || !team || !max || max < 1) return; // also skips the header row
+          entries.push({ key: `${dept}::${team}`, dept, team, max });
+        });
+        resolve(entries);
+      } catch(err){ reject(err); }
+    };
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+async function saveRoster(entries){
+  await set(ref(db, 'roster'), { entries, updatedAt: Date.now() });
+  state.roster = { entries, updatedAt: Date.now() };
+  state.rosterPreview = null;
+  state.rosterUploadMsg = '명단이 저장되었습니다.';
+  render();
+}
+
+async function clearRoster(){
+  await set(ref(db, 'roster'), { entries: [] });
+  state.roster = { entries: [] };
+  state.rosterPreview = null;
+  state.rosterUploadMsg = '명단이 삭제되었습니다.';
   render();
 }
 
@@ -437,18 +528,23 @@ async function resetToday(){
     set(ref(db, `teams/${state.date}`), null),
     set(ref(db, `draw/${state.date}`), null),
     set(ref(db, `totals/${state.date}`), null),
-    set(ref(db, `drawLock/${state.date}`), null)
+    set(ref(db, `drawLock/${state.date}`), null),
+    set(ref(db, `teamNames/${state.date}`), null)
   ]);
   clearMyEntryLocal(state.date);
   state.teams = []; state.draw = null; state.myEntry = null;
   render();
 }
 
+function rangeLabel(start, end){
+  return start === end ? `${start}번` : `${start}~${end}번`;
+}
+
 function myResult(){
   if(!state.draw || !state.myEntry) return null;
   const w = state.draw.winners.find(w => w.id === state.myEntry.id);
   if(!w) return { win:false };
-  return { win:true, order: w.order, count: w.count };
+  return { win:true, start: w.start, end: w.end, count: w.count };
 }
 
 function render(fromPoll){
@@ -530,10 +626,67 @@ function renderMain(fromPoll){
     return;
   }
 
-  // Once the form is mounted, never rebuild it while it's the active view —
-  // only patch the dynamic bits (button state, error message). This makes
-  // typed input immune to background refreshes, regardless of timing.
-  if(document.getElementById('teamInput') && el.dataset.view === 'form'){
+  const rosterEntries = (state.roster && state.roster.entries) || [];
+  const useDropdown = rosterEntries.length > 0;
+
+  // preserve whatever is currently typed/selected across a rebuild
+  const prevCount = document.getElementById('countInput') ? document.getElementById('countInput').value : '';
+  const prevSelect = document.getElementById('teamSelect') ? document.getElementById('teamSelect').value : '';
+
+  if(useDropdown){
+    const taken = new Set(state.teams.map(t => t.deptKey));
+    const available = rosterEntries.filter(en => !taken.has(en.key));
+
+    if(available.length === 0){
+      el.dataset.view = 'form-full';
+      el.innerHTML = `<div class="card"><h2>선택 가능한 부서/팀이 없습니다</h2>
+        <p class="helper">등록된 부서·팀이 모두 접수되었습니다.</p></div>`;
+      return;
+    }
+
+    el.dataset.view = 'form-select';
+    const selectedEntry = available.find(en => en.key === prevSelect);
+    const options = available.map(en =>
+      `<option value="${escapeHTML(en.key)}" data-max="${en.max}" ${en.key===prevSelect?'selected':''}>${escapeHTML(en.dept)} · ${escapeHTML(en.team)} (최대 ${en.max}명)</option>`
+    ).join('');
+    const maxHint = selectedEntry ? `최대 ${selectedEntry.max}명까지 신청 가능합니다.` : '부서·팀을 먼저 선택하면 신청 가능 인원이 표시됩니다.';
+    el.innerHTML = `
+      <div class="card">
+        <h2>부서·팀 접수</h2>
+        <div class="field"><label for="teamSelect">부서 · 팀</label>
+          <select id="teamSelect"><option value="">부서·팀을 선택하세요</option>${options}</select></div>
+        <div class="field"><label for="countInput">인원수</label>
+          <input type="number" id="countInput" placeholder="예: 5" min="1" ${selectedEntry?`max="${selectedEntry.max}"`:''} value="${escapeHTML(prevCount)}">
+          <div class="helper" id="countHint" style="margin-top:4px;">${maxHint}</div></div>
+        <button class="btn btn-primary" id="joinBtn" ${state.busy?'disabled':''}>${state.busy?'접수 중...':'접수하기'}</button>
+        ${state.errorMsg ? `<div class="msg" id="regMsg">${escapeHTML(state.errorMsg)}</div>` : ''}
+        <div class="helper">오늘 ${String(state.config.startHour).padStart(2,'0')}:${String(state.config.startMinute).padStart(2,'0')}부터 ${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}까지 부서·팀·인원수로 접수, 누적 ${state.config.cap}명 선착순. 마감 시 ${state.config.winCap}명 한도로 사다리 방식 무작위 추첨됩니다. 부서·팀당 한 번만, 사전에 등록된 인원 이하로만 신청할 수 있어요.</div>
+      </div>`;
+
+    document.getElementById('teamSelect').addEventListener('change', (e) => {
+      const en = available.find(x => x.key === e.target.value);
+      const countEl = document.getElementById('countInput');
+      const hintEl = document.getElementById('countHint');
+      if(en){
+        countEl.max = en.max;
+        hintEl.textContent = `최대 ${en.max}명까지 신청 가능합니다.`;
+      } else {
+        countEl.removeAttribute('max');
+        hintEl.textContent = '부서·팀을 먼저 선택하면 신청 가능 인원이 표시됩니다.';
+      }
+    });
+
+    document.getElementById('joinBtn').onclick = () => {
+      handleJoin(document.getElementById('teamSelect').value, document.getElementById('countInput').value);
+    };
+    return;
+  }
+
+  // Fallback: no department list configured yet — free-text team name.
+  // Once mounted, never rebuild while it's the active view — only patch
+  // the dynamic bits (button state, error message) — so typing is immune
+  // to background refreshes.
+  if(document.getElementById('teamInput') && el.dataset.view === 'form-text'){
     const btn = document.getElementById('joinBtn');
     if(btn){ btn.disabled = state.busy; btn.textContent = state.busy ? '접수 중...' : '접수하기'; }
     let msgEl = document.getElementById('regMsg');
@@ -551,7 +704,7 @@ function renderMain(fromPoll){
     return;
   }
 
-  el.dataset.view = 'form';
+  el.dataset.view = 'form-text';
   el.innerHTML = `
     <div class="card">
       <h2>팀 접수</h2>
@@ -561,7 +714,7 @@ function renderMain(fromPoll){
         <input type="number" id="countInput" placeholder="예: 5" min="1"></div>
       <button class="btn btn-primary" id="joinBtn" ${state.busy?'disabled':''}>${state.busy?'접수 중...':'접수하기'}</button>
       ${state.errorMsg ? `<div class="msg" id="regMsg">${escapeHTML(state.errorMsg)}</div>` : ''}
-      <div class="helper">오늘 ${String(state.config.startHour).padStart(2,'0')}:${String(state.config.startMinute).padStart(2,'0')}부터 ${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}까지 팀명·인원수로 접수, 누적 ${state.config.cap}명 선착순. 마감 시 ${state.config.winCap}명 한도로 사다리 방식 무작위 추첨됩니다.</div>
+      <div class="helper">오늘 ${String(state.config.startHour).padStart(2,'0')}:${String(state.config.startMinute).padStart(2,'0')}부터 ${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}까지 팀명·인원수로 접수, 누적 ${state.config.cap}명 선착순. 마감 시 ${state.config.winCap}명 한도로 사다리 방식 무작위 추첨됩니다. 팀당 한 번만 신청할 수 있어요. (관리자 설정에서 부서 목록을 등록하면 직접 입력 대신 드롭다운으로 바뀝니다.)</div>
     </div>`;
 
   document.getElementById('joinBtn').onclick = () => {
@@ -580,7 +733,7 @@ function ticketHTML(result, hueColor){
         <div class="t-eyebrow">Team Admission</div>
         <div class="t-date-big">${state.date}</div>
         <div class="t-stamp win">당첨</div>
-        <div class="t-num digits">${String(result.order).padStart(3,'0')}</div>
+        <div class="t-num digits">${rangeLabel(result.start, result.end)}</div>
         <div class="t-sub">입장 순번</div>
         <div class="t-team">${escapeHTML(entry.team)}</div>
         <div class="t-count">${result.count}명</div>
@@ -612,7 +765,7 @@ function ticketCompactHTML(result, hueColor){
       <div class="t-content">
         <div class="t-eyebrow">Team Admission</div>
         <div class="t-stamp win">당첨</div>
-        <div class="t-num digits">${String(result.order).padStart(3,'0')}</div>
+        <div class="t-num digits">${rangeLabel(result.start, result.end)}</div>
         <div class="t-sub">입장 순번</div>
         <div class="t-divider"></div>
         <div class="t-row"><span>팀명</span><b>${escapeHTML(entry.team)}</b></div>
@@ -646,10 +799,10 @@ function listPanelHTML(){
   const teamById = {}; state.teams.forEach(t => teamById[t.id] = t.team);
   const rows = state.draw.winners.map(w => {
     const nm = teamById[w.id] || '(알 수 없음)';
-    return `<div class="list-row"><span class="n digits">${String(w.order).padStart(3,'0')}</span><span class="nm">${escapeHTML(nm)}</span><span class="ct">${w.count}명</span></div>`;
+    return `<div class="list-row"><span class="n digits">${rangeLabel(w.start, w.end)}</span><span class="nm">${escapeHTML(nm)}</span><span class="ct">${w.count}명</span></div>`;
   }).join('');
   return `<div class="list-panel">
-    <div class="list-head"><span>순번</span><span>팀명</span><span>인원</span></div>
+    <div class="list-head"><span>입장 순번</span><span>팀명</span><span>인원</span></div>
     ${rows || '<div class="list-empty">당첨 팀이 없습니다.</div>'}
     <div class="helper" style="margin-top:8px;">${state.date} 접수분 · 총 당첨 ${state.draw.winTotal}명 · 추첨 ${fmtDateTime(state.draw.drawnAt)}</div>
   </div>`;
@@ -679,34 +832,46 @@ function renderAdmin(){
     return;
   }
 
-  // If the admin is actively typing (within the last ~5s), skip rebuilding
-  // the form so in-progress edits aren't wiped by the background poll.
-  const editingGuardActive = Date.now() < (state.adminEditingUntil || 0) && document.getElementById('capInput');
-  if(editingGuardActive){
-    const statusEl = el.querySelector('.admin-status');
-    if(statusEl) statusEl.textContent = `오늘(${state.date}) 누적 ${totalCount(state.teams)}/${state.config.cap}명 · ${state.teams.length}팀 · ${state.draw ? '추첨 완료' : '접수 중'}`;
-    return;
-  }
+  // Carry forward whatever is currently typed in these fields so that a
+  // rebuild (triggered by any config/teams/draw change) never wipes
+  // in-progress edits — we always rebuild (so confirm dialogs & messages
+  // stay correct), but seed inputs from their live DOM value when present.
+  const prevVals = {};
+  ['startInput','deadlineInput','capInput','winCapInput'].forEach(id => {
+    const elx = document.getElementById(id);
+    if(elx) prevVals[id] = elx.value;
+  });
+  const v = (id, fallback) => prevVals[id] !== undefined ? prevVals[id] : fallback;
+
+  const rosterCount = ((state.roster && state.roster.entries) || []).length;
 
   el.innerHTML = `<div class="admin-panel"><h3>운영 설정</h3>
     <div class="admin-status">오늘(${state.date}) 누적 ${totalCount(state.teams)}/${state.config.cap}명 · ${state.teams.length}팀 · ${state.draw ? '추첨 완료' : '접수 중'}</div>
     <div class="field" style="margin-top:10px;"><label>매일 신청 시작 시각</label>
-      <input type="time" id="startInput" value="${String(state.config.startHour).padStart(2,'0')}:${String(state.config.startMinute).padStart(2,'0')}"></div>
+      <input type="time" id="startInput" value="${v('startInput', String(state.config.startHour).padStart(2,'0')+':'+String(state.config.startMinute).padStart(2,'0'))}"></div>
     <div class="field"><label>매일 마감 시각</label>
-      <input type="time" id="deadlineInput" value="${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}"></div>
+      <input type="time" id="deadlineInput" value="${v('deadlineInput', String(state.config.hour).padStart(2,'0')+':'+String(state.config.minute).padStart(2,'0'))}"></div>
     <div class="field"><label>전체 접수 정원 (선착순 인원)</label>
-      <input type="number" id="capInput" min="1" value="${state.config.cap}"></div>
+      <input type="number" id="capInput" min="1" value="${v('capInput', state.config.cap)}"></div>
     <div class="field"><label>당첨 인원 (추첨으로 뽑을 인원)</label>
-      <input type="number" id="winCapInput" min="1" value="${state.config.winCap}"></div>
+      <input type="number" id="winCapInput" min="1" value="${v('winCapInput', state.config.winCap)}"></div>
     <button class="btn btn-ghost small-btn" id="saveDeadlineBtn">설정 저장 (매일 적용)</button>
     ${state.configMsg ? `<div class="msg">${escapeHTML(state.configMsg)}</div>` : ''}
-    <div class="admin-status">입력 중에는 약 5초간 화면이 자동 새로고침되지 않습니다. 그 사이 "설정 저장"을 눌러 확정해주세요. 정원·당첨 인원 변경은 오늘 이후 접수부터 적용되며, 이미 접수된 팀·완료된 추첨에는 영향을 주지 않습니다.</div>
+    <div class="admin-status" style="margin-top:6px;">정원·당첨 인원 변경은 오늘 이후 접수부터 적용되며, 이미 접수된 팀·완료된 추첨에는 영향을 주지 않습니다.</div>
+
+    <h3 style="margin-top:22px;">부서·팀 명단 (엑셀)</h3>
+    <div class="admin-status">현재 저장된 명단: <b style="color:var(--led-amber);">${rosterCount}건</b>${rosterCount>0 ? ' · 접수 화면이 드롭다운 방식으로 동작 중' : ' · 명단이 없으면 자유 입력 방식으로 동작'}</div>
+    <div class="field" style="margin-top:10px;"><label>엑셀 업로드 (1열: 부서명, 2열: 팀명, 3열: 인원 상한 — 1행은 머리글로 취급되어 건너뜁니다)</label>
+      <input type="file" id="rosterFile" accept=".xlsx,.xls"></div>
+    ${state.rosterUploadMsg ? `<div class="msg">${escapeHTML(state.rosterUploadMsg)}</div>` : ''}
+    <button class="btn btn-ghost small-btn" id="rosterSaveBtn" ${state.rosterPreview ? '' : 'disabled'}>명단 저장 (기존 명단을 교체합니다)</button>
+    ${rosterCount>0 ? `<button class="btn btn-ghost small-btn" id="rosterClearBtn" style="margin-top:8px;">명단 삭제 (자유 입력 방식으로 전환)</button>` : ''}
 
     ${state.confirmForceDraw ? `
       <div class="msg">현재 접수 기준으로 즉시 추첨합니다. 되돌릴 수 없어요. 진행할까요?</div>
       <button class="btn btn-danger small-btn" id="forceDrawYes" style="margin-top:6px;">예, 지금 추첨</button>
       <button class="btn btn-ghost small-btn" id="forceDrawNo" style="margin-top:6px;">취소</button>
-    ` : `<button class="btn btn-danger small-btn" id="forceDrawBtn" style="margin-top:10px;" ${state.draw?'disabled':''}>${state.draw?'이미 추첨됨':'지금 즉시 추첨'}</button>`}
+    ` : `<button class="btn btn-danger small-btn" id="forceDrawBtn" style="margin-top:20px;" ${state.draw?'disabled':''}>${state.draw?'이미 추첨됨':'지금 즉시 추첨'}</button>`}
 
     ${state.confirmReset ? `
       <div class="msg">오늘 접수·추첨 결과를 모두 삭제합니다. 진행할까요?</div>
@@ -715,39 +880,56 @@ function renderAdmin(){
     ` : `<button class="btn btn-ghost small-btn" id="resetBtn" style="margin-top:10px;">오늘 접수 초기화</button>`}
   </div>`;
 
-  // typing in any config field extends the 5s edit-grace window
-  ['startInput','deadlineInput','capInput','winCapInput'].forEach(id => {
-    const elInput = document.getElementById(id);
-    if(elInput) elInput.addEventListener('input', () => { state.adminEditingUntil = Date.now() + 5000; });
-  });
-
   document.getElementById('saveDeadlineBtn').onclick = () => {
     const sv = document.getElementById('startInput').value.split(':');
-    const v = document.getElementById('deadlineInput').value.split(':');
+    const dv = document.getElementById('deadlineInput').value.split(':');
     const cap = parseInt(document.getElementById('capInput').value, 10);
     const winCap = parseInt(document.getElementById('winCapInput').value, 10);
     if(!cap || cap < 1 || !winCap || winCap < 1){
       state.configMsg = '정원과 당첨 인원은 1 이상의 숫자로 입력해주세요.';
-      state.adminEditingUntil = 0;
       render();
       return;
     }
     if(winCap > cap){
       state.configMsg = '당첨 인원은 전체 정원보다 클 수 없습니다.';
-      state.adminEditingUntil = 0;
       render();
       return;
     }
     const startMinutesTotal = parseInt(sv[0],10)*60 + parseInt(sv[1],10);
-    const endMinutesTotal = parseInt(v[0],10)*60 + parseInt(v[1],10);
+    const endMinutesTotal = parseInt(dv[0],10)*60 + parseInt(dv[1],10);
     if(startMinutesTotal >= endMinutesTotal){
       state.configMsg = '신청 시작 시각은 마감 시각보다 빨라야 합니다.';
-      state.adminEditingUntil = 0;
       render();
       return;
     }
-    saveConfig(parseInt(sv[0],10), parseInt(sv[1],10), parseInt(v[0],10), parseInt(v[1],10), cap, winCap);
+    saveConfig(parseInt(sv[0],10), parseInt(sv[1],10), parseInt(dv[0],10), parseInt(dv[1],10), cap, winCap);
   };
+
+  document.getElementById('rosterFile').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if(!file) return;
+    try{
+      const entries = await parseRosterFile(file);
+      if(entries.length === 0){
+        state.rosterPreview = null;
+        state.rosterUploadMsg = '인식된 데이터가 없습니다. 1열 부서명, 2열 팀명, 3열 인원(숫자) 형식인지 확인해주세요.';
+      } else {
+        state.rosterPreview = entries;
+        state.rosterUploadMsg = `${entries.length}건 인식됨. "명단 저장"을 눌러 확정하세요.`;
+      }
+    } catch(err){
+      state.rosterPreview = null;
+      state.rosterUploadMsg = '엑셀 파일을 읽는 중 문제가 발생했습니다. 파일 형식을 확인해주세요.';
+    }
+    render();
+  });
+
+  const rosterSaveBtn = document.getElementById('rosterSaveBtn');
+  if(rosterSaveBtn) rosterSaveBtn.onclick = () => {
+    if(state.rosterPreview) saveRoster(state.rosterPreview);
+  };
+  const rosterClearBtn = document.getElementById('rosterClearBtn');
+  if(rosterClearBtn) rosterClearBtn.onclick = () => { clearRoster(); };
 
   if(state.confirmForceDraw){
     document.getElementById('forceDrawYes').onclick = () => { state.confirmForceDraw = false; forceDraw(); };
