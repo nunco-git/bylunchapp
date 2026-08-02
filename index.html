@@ -130,6 +130,7 @@
   .qr-result.ok{ background:#12281f; border:1px solid #2f6e4a; color:#8ee6b0; }
   .qr-result.warn{ background:#2a2416; border:1px solid #6b5a22; color:#ffd479; }
   .qr-result.bad{ background:#2a1616; border:1px solid #6b2222; color:#ff9c9c; }
+  .qr-result.idle{ background:#1a1c22; border:1px solid #2c303a; color:#79746a; text-align:center; }
   .qr-result b{ display:block; font-size:15px; margin-bottom:4px; }
   .daychip{
     display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700;
@@ -256,12 +257,14 @@ let state = {
   roster: { entries: [] },
   rosterPreview: null,
   scannerOpen: false,
-  scanMsg: null,
+  scanSetupErr: null,
+  pwMsg: null,
   rosterUploadMsg: null,
   myEntry: null,
   listOpen: false,
   adminOpen: false,
   adminUnlocked: false,
+  adminAuth: null,
   busy: false,
   errorMsg: null
 };
@@ -341,6 +344,26 @@ function attachRosterListener(){
   });
 }
 
+// Default admin code is "2478" (SHA-256 below) until the admin sets a new one.
+const DEFAULT_ADMIN_HASH = 'aabbb2bd43c0fb27462f139e0274faa6c3a5c6d600e1b2fc6d3c96c18503607e';
+let unsubAdminAuth = null;
+function attachAdminAuthListener(){
+  if(unsubAdminAuth) unsubAdminAuth();
+  unsubAdminAuth = onValue(ref(db, 'adminAuth'), (snap) => {
+    state.adminAuth = snap.val();
+    render();
+  });
+}
+async function sha256Hex(str){
+  const enc = new TextEncoder().encode(str);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+function passwordMeetsPolicy(pw){
+  if(pw.length < 10) return false;
+  return /[`~!@#$%^&*()_\-+=\[\]{}\\|;:'",.<>/?]/.test(pw);
+}
+
 function switchToDate(date){
   state.date = date;
   state.teams = [];
@@ -353,6 +376,7 @@ function switchToDate(date){
 function loadAll(){
   switchToDate(todayStr());
   attachConfigListener();
+  attachAdminAuthListener();
   attachRosterListener();
 }
 
@@ -488,7 +512,6 @@ async function handleJoin(selector, count){
 async function forceDraw(){ if(!state.draw) await runDraw(); }
 
 let html5QrInstance = null;
-let scanCooldownUntil = 0;
 
 async function startScanner(){
   if(html5QrInstance || !window.Html5Qrcode) return;
@@ -502,7 +525,7 @@ async function startScanner(){
     );
   }catch(err){
     html5QrInstance = null;
-    state.scanMsg = { type: 'bad', text: '카메라를 시작할 수 없습니다. 카메라 권한을 확인해주세요.' };
+    state.scanSetupErr = '카메라를 시작할 수 없습니다. 카메라 권한을 확인해주세요.';
     render();
   }
 }
@@ -514,25 +537,69 @@ async function stopScanner(){
   }
 }
 
+// USB/Bluetooth barcode-style QR scanners usually act as a keyboard: they
+// "type" the decoded text very fast, then send Enter. We buffer keystrokes
+// and flush on Enter, without needing any input field to be focused — this
+// avoids popping up the mobile on-screen keyboard while the camera is active.
+let hwScanBuffer = '';
+let hwScanTimer = null;
+function hwScanKeyHandler(e){
+  if(!state.scannerOpen) return;
+  const tag = document.activeElement && document.activeElement.tagName;
+  if(tag === 'INPUT' || tag === 'TEXTAREA') return; // don't hijack real typing elsewhere
+  if(e.key === 'Enter'){
+    const val = hwScanBuffer.trim();
+    hwScanBuffer = '';
+    if(val) onScanDecoded(val);
+    return;
+  }
+  if(e.key.length === 1){
+    hwScanBuffer += e.key;
+    clearTimeout(hwScanTimer);
+    hwScanTimer = setTimeout(() => { hwScanBuffer = ''; }, 300); // real scanners type fast; reset on human-speed gaps
+  }
+}
+function setupHardwareScanListener(){ document.addEventListener('keydown', hwScanKeyHandler); }
+function teardownHardwareScanListener(){ document.removeEventListener('keydown', hwScanKeyHandler); hwScanBuffer=''; }
+
+function speak(text){
+  try{
+    if(!window.speechSynthesis) return;
+    window.speechSynthesis.cancel(); // don't let announcements queue up and lag behind
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'ko-KR';
+    utter.rate = 1;
+    window.speechSynthesis.speak(utter);
+  }catch(e){}
+}
+
+// Only ignore an immediate repeat of the exact same code (someone still
+// holding their QR in view) — a different code is processed instantly,
+// with no blanket wait between people.
+let lastScanCode = null;
+let lastScanAt = 0;
+
 async function onScanDecoded(decodedText){
-  if(Date.now() < scanCooldownUntil) return;
-  scanCooldownUntil = Date.now() + 2000;
+  const now = Date.now();
+  if(decodedText === lastScanCode && (now - lastScanAt) < 3000) return;
+  lastScanCode = decodedText;
+  lastScanAt = now;
 
   const parts = decodedText.split(':');
   if(parts[0] !== 'LADDER' || parts.length < 3){
-    state.scanMsg = { type: 'bad', text: '유효하지 않은 QR코드입니다.' };
-    render(); return;
+    speak('유효하지 않은 QR코드입니다.');
+    return;
   }
   const scanDate = parts[1];
   const id = parts.slice(2).join(':');
 
   if(scanDate !== state.date){
-    state.scanMsg = { type: 'bad', text: `오늘(${state.date}) 발급된 티켓이 아닙니다. (티켓 날짜: ${scanDate})` };
-    render(); return;
+    speak('오늘 발급된 티켓이 아닙니다.');
+    return;
   }
   if(!state.draw || !state.draw.winners.some(w => w.id === id)){
-    state.scanMsg = { type: 'bad', text: '당첨자 명단에 없는 티켓입니다.' };
-    render(); return;
+    speak('당첨자 명단에 없는 티켓입니다.');
+    return;
   }
 
   const winInfo = state.draw.winners.find(w => w.id === id);
@@ -541,29 +608,16 @@ async function onScanDecoded(decodedText){
     const snap = await get(ref(db, `teams/${state.date}/${id}`));
     teamInfo = snap.val();
   }
-  const teamLabel = teamInfo ? teamInfo.team : '(팀명 확인 불가)';
+  const teamLabel = teamInfo ? teamInfo.team : '팀 정보 확인 불가';
 
   const checkinRef = ref(db, `checkins/${state.date}/${id}`);
   const txResult = await runTransaction(checkinRef, current => current ? undefined : { at: Date.now() });
 
   if(!txResult.committed){
-    const existing = (await get(checkinRef)).val();
-    state.scanMsg = {
-      type: 'warn',
-      text: `이미 입장 처리된 티켓입니다.\n${teamLabel} · 순번 ${rangeLabel(winInfo.start, winInfo.end)} · ${winInfo.count}명\n최초 처리: ${fmtDateTime(new Date(existing.at).toISOString())}`
-    };
+    speak(`${teamLabel}, 이미 입장 처리되었습니다.`);
   } else {
-    state.scanMsg = {
-      type: 'ok',
-      text: `입장 확인 완료\n${teamLabel} · 순번 ${rangeLabel(winInfo.start, winInfo.end)} · ${winInfo.count}명`
-    };
+    speak(`${teamLabel}, ${winInfo.count}명, 입장 확인되었습니다.`);
   }
-  render();
-}
-
-function scanMsgHTML(){
-  if(!state.scanMsg) return '';
-  return `<div class="qr-result ${state.scanMsg.type}">${escapeHTML(state.scanMsg.text).replace(/\n/g,'<br>')}</div>`;
 }
 
 async function saveConfig(startHour, startMinute, hour, minute, cap, winCap){
@@ -927,8 +981,9 @@ function renderAdmin(){
     state.adminOpen = !state.adminOpen;
     if(!state.adminOpen && state.scannerOpen){
       stopScanner();
+      teardownHardwareScanListener();
       state.scannerOpen = false;
-      state.scanMsg = null;
+      state.scanSetupErr = null;
     }
     render();
   };
@@ -941,9 +996,11 @@ function renderAdmin(){
       <button class="btn btn-primary small-btn" id="adminUnlockBtn" style="width:auto;">확인</button></div>
       ${state.adminErr ? `<div class="msg">${escapeHTML(state.adminErr)}</div>` : ''}
       <div class="admin-status">간단한 화면 잠금이며 보안 인증이 아닙니다.</div></div>`;
-    const tryUnlock = () => {
+    const tryUnlock = async () => {
       const v = document.getElementById('adminPass').value.trim();
-      if(v === '2478'){ state.adminUnlocked = true; state.adminErr = null; render(); }
+      const expected = (state.adminAuth && state.adminAuth.hash) || DEFAULT_ADMIN_HASH;
+      const enteredHash = await sha256Hex(v);
+      if(enteredHash === expected){ state.adminUnlocked = true; state.adminErr = null; render(); }
       else { state.adminErr = '코드가 올바르지 않습니다.'; render(); }
     };
     document.getElementById('adminUnlockBtn').onclick = tryUnlock;
@@ -955,24 +1012,26 @@ function renderAdmin(){
 
   if(state.scannerOpen){
     if(document.getElementById('qrReader')){
-      const msgEl = document.getElementById('scanMsgArea');
-      if(msgEl) msgEl.innerHTML = scanMsgHTML();
+      const errEl = document.getElementById('scanSetupErrArea');
+      if(errEl) errEl.innerHTML = state.scanSetupErr ? `<div class="msg">${escapeHTML(state.scanSetupErr)}</div>` : '';
       return;
     }
     el.innerHTML = `<div class="admin-panel">
       <h3>당첨자 QR 스캔</h3>
-      <div class="admin-status">카메라로 당첨 티켓의 QR을 비추면 자동으로 인식됩니다.</div>
+      <div class="admin-status">휴대폰: 카메라로 QR을 비추면 자동 인식되고, 결과는 음성으로 안내됩니다 (화면에는 따로 표시되지 않아요). 노트북 + USB/블루투스 스캐너: 다른 입력칸을 클릭하지 않은 상태에서 스캐너로 QR을 찍으면 자동으로 인식됩니다.</div>
       <div class="qr-reader-wrap" id="qrReader"></div>
-      <div id="scanMsgArea">${scanMsgHTML()}</div>
+      <div id="scanSetupErrArea">${state.scanSetupErr ? `<div class="msg">${escapeHTML(state.scanSetupErr)}</div>` : ''}</div>
       <button class="btn btn-ghost small-btn" id="scannerCloseBtn" style="margin-top:10px;">스캐너 닫기</button>
     </div>`;
     document.getElementById('scannerCloseBtn').onclick = async () => {
       await stopScanner();
+      teardownHardwareScanListener();
       state.scannerOpen = false;
-      state.scanMsg = null;
+      state.scanSetupErr = null;
       render();
     };
     startScanner();
+    setupHardwareScanListener();
     return;
   }
 
@@ -981,7 +1040,7 @@ function renderAdmin(){
   // in-progress edits — we always rebuild (so confirm dialogs & messages
   // stay correct), but seed inputs from their live DOM value when present.
   const prevVals = {};
-  ['startInput','deadlineInput','capInput','winCapInput'].forEach(id => {
+  ['startInput','deadlineInput','capInput','winCapInput','newPwInput','newPwConfirm'].forEach(id => {
     const elx = document.getElementById(id);
     if(elx) prevVals[id] = elx.value;
   });
@@ -1024,6 +1083,15 @@ function renderAdmin(){
       <button class="btn btn-danger small-btn" id="resetYes" style="margin-top:6px;">예, 초기화</button>
       <button class="btn btn-ghost small-btn" id="resetNo" style="margin-top:6px;">취소</button>
     ` : `<button class="btn btn-ghost small-btn" id="resetBtn" style="margin-top:10px;">오늘 접수 초기화</button>`}
+
+    <h3 style="margin-top:22px;">관리자 비밀번호 변경</h3>
+    <div class="admin-status">특수문자를 포함해 10자리 이상으로 설정해주세요. 이 비밀번호는 화면 잠금용이며, 데이터베이스 자체는 접근 제한이 없는 구조라 완전한 보안 인증은 아닙니다.</div>
+    <div class="field" style="margin-top:10px;"><label>새 비밀번호</label>
+      <input type="password" id="newPwInput" placeholder="10자 이상, 특수문자 포함" value="${escapeHTML(v('newPwInput',''))}"></div>
+    <div class="field"><label>새 비밀번호 확인</label>
+      <input type="password" id="newPwConfirm" placeholder="다시 입력" value="${escapeHTML(v('newPwConfirm',''))}"></div>
+    <button class="btn btn-ghost small-btn" id="pwChangeBtn">비밀번호 변경</button>
+    ${state.pwMsg ? `<div class="msg">${escapeHTML(state.pwMsg)}</div>` : ''}
   </div>`;
 
   document.getElementById('saveDeadlineBtn').onclick = () => {
@@ -1079,7 +1147,27 @@ function renderAdmin(){
 
   document.getElementById('scannerOpenBtn').onclick = () => {
     state.scannerOpen = true;
-    state.scanMsg = null;
+    state.scanSetupErr = null;
+    render();
+  };
+
+  document.getElementById('pwChangeBtn').onclick = async () => {
+    const pw1 = document.getElementById('newPwInput').value;
+    const pw2 = document.getElementById('newPwConfirm').value;
+    if(!passwordMeetsPolicy(pw1)){
+      state.pwMsg = '비밀번호는 특수문자를 포함해 10자 이상이어야 합니다.';
+      render(); return;
+    }
+    if(pw1 !== pw2){
+      state.pwMsg = '두 비밀번호가 서로 다릅니다.';
+      render(); return;
+    }
+    const hash = await sha256Hex(pw1);
+    await set(ref(db, 'adminAuth'), { hash, updatedAt: Date.now() });
+    state.adminAuth = { hash };
+    state.pwMsg = '비밀번호가 변경되었습니다. 다음 접속부터 새 비밀번호를 사용하세요.';
+    document.getElementById('newPwInput').value = '';
+    document.getElementById('newPwConfirm').value = '';
     render();
   };
 
