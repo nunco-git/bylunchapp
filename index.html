@@ -119,6 +119,18 @@
   .t-row{display:flex;justify-content:space-between;font-size:12px;color:var(--ink-soft);padding:3px 0;}
   .t-row b{color:var(--ink);font-weight:700;}
   .t-note{margin-top:14px;font-size:12.5px;line-height:1.6;color:var(--ink);background:#00000010;border-radius:6px;padding:10px 12px;}
+  .t-qr{ display:flex; justify-content:center; margin:16px 0 4px; }
+  .t-qr img, .t-qr canvas{ border-radius:8px; padding:8px; background:#fff; }
+  .t-qr-label{ text-align:center; font-size:11px; color:var(--ink-soft); letter-spacing:.08em; margin-bottom:4px; }
+
+  .qr-reader-wrap{ border-radius:12px; overflow:hidden; margin-top:10px; background:#000; }
+  .qr-result{
+    margin-top:10px; border-radius:10px; padding:14px; font-size:13px; line-height:1.6;
+  }
+  .qr-result.ok{ background:#12281f; border:1px solid #2f6e4a; color:#8ee6b0; }
+  .qr-result.warn{ background:#2a2416; border:1px solid #6b5a22; color:#ffd479; }
+  .qr-result.bad{ background:#2a1616; border:1px solid #6b2222; color:#ff9c9c; }
+  .qr-result b{ display:block; font-size:15px; margin-bottom:4px; }
   .daychip{
     display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700;
     padding:4px 10px; border-radius:20px; background:var(--dayhue,#cf9f3f); color:#1c1400;
@@ -211,6 +223,8 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.0/firebase-app.js";
 import {
@@ -239,6 +253,8 @@ let state = {
   config: { startHour: 9, startMinute: 0, hour: 11, minute: 0, cap: CAP_DEFAULT, winCap: WINCAP_DEFAULT },
   roster: { entries: [] },
   rosterPreview: null,
+  scannerOpen: false,
+  scanMsg: null,
   rosterUploadMsg: null,
   myEntry: null,
   listOpen: false,
@@ -469,6 +485,85 @@ async function handleJoin(selector, count){
 
 async function forceDraw(){ if(!state.draw) await runDraw(); }
 
+let html5QrInstance = null;
+let scanCooldownUntil = 0;
+
+async function startScanner(){
+  if(html5QrInstance || !window.Html5Qrcode) return;
+  try{
+    html5QrInstance = new window.Html5Qrcode('qrReader');
+    await html5QrInstance.start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: 240 },
+      onScanDecoded,
+      () => {} // ignore per-frame "no code found" callbacks
+    );
+  }catch(err){
+    html5QrInstance = null;
+    state.scanMsg = { type: 'bad', text: '카메라를 시작할 수 없습니다. 카메라 권한을 확인해주세요.' };
+    render();
+  }
+}
+
+async function stopScanner(){
+  if(html5QrInstance){
+    try{ await html5QrInstance.stop(); html5QrInstance.clear(); }catch(e){}
+    html5QrInstance = null;
+  }
+}
+
+async function onScanDecoded(decodedText){
+  if(Date.now() < scanCooldownUntil) return;
+  scanCooldownUntil = Date.now() + 2000;
+
+  const parts = decodedText.split(':');
+  if(parts[0] !== 'LADDER' || parts.length < 3){
+    state.scanMsg = { type: 'bad', text: '유효하지 않은 QR코드입니다.' };
+    render(); return;
+  }
+  const scanDate = parts[1];
+  const id = parts.slice(2).join(':');
+
+  if(scanDate !== state.date){
+    state.scanMsg = { type: 'bad', text: `오늘(${state.date}) 발급된 티켓이 아닙니다. (티켓 날짜: ${scanDate})` };
+    render(); return;
+  }
+  if(!state.draw || !state.draw.winners.some(w => w.id === id)){
+    state.scanMsg = { type: 'bad', text: '당첨자 명단에 없는 티켓입니다.' };
+    render(); return;
+  }
+
+  const winInfo = state.draw.winners.find(w => w.id === id);
+  let teamInfo = state.teams.find(t => t.id === id);
+  if(!teamInfo){
+    const snap = await get(ref(db, `teams/${state.date}/${id}`));
+    teamInfo = snap.val();
+  }
+  const teamLabel = teamInfo ? teamInfo.team : '(팀명 확인 불가)';
+
+  const checkinRef = ref(db, `checkins/${state.date}/${id}`);
+  const txResult = await runTransaction(checkinRef, current => current ? undefined : { at: Date.now() });
+
+  if(!txResult.committed){
+    const existing = (await get(checkinRef)).val();
+    state.scanMsg = {
+      type: 'warn',
+      text: `이미 입장 처리된 티켓입니다.\n${teamLabel} · 순번 ${rangeLabel(winInfo.start, winInfo.end)} · ${winInfo.count}명\n최초 처리: ${fmtDateTime(new Date(existing.at).toISOString())}`
+    };
+  } else {
+    state.scanMsg = {
+      type: 'ok',
+      text: `입장 확인 완료\n${teamLabel} · 순번 ${rangeLabel(winInfo.start, winInfo.end)} · ${winInfo.count}명`
+    };
+  }
+  render();
+}
+
+function scanMsgHTML(){
+  if(!state.scanMsg) return '';
+  return `<div class="qr-result ${state.scanMsg.type}">${escapeHTML(state.scanMsg.text).replace(/\n/g,'<br>')}</div>`;
+}
+
 async function saveConfig(startHour, startMinute, hour, minute, cap, winCap){
   const cfg = { startHour, startMinute, hour, minute, cap, winCap };
   await set(ref(db, 'config'), cfg);
@@ -529,7 +624,8 @@ async function resetToday(){
     set(ref(db, `draw/${state.date}`), null),
     set(ref(db, `totals/${state.date}`), null),
     set(ref(db, `drawLock/${state.date}`), null),
-    set(ref(db, `teamNames/${state.date}`), null)
+    set(ref(db, `teamNames/${state.date}`), null),
+    set(ref(db, `checkins/${state.date}`), null)
   ]);
   clearMyEntryLocal(state.date);
   state.teams = []; state.draw = null; state.myEntry = null;
@@ -578,6 +674,17 @@ function watermarkHTML(){
   return `<div class="watermark">${rows}</div>`;
 }
 
+function renderTicketQR(){
+  const qrEl = document.getElementById('qrcode');
+  if(!qrEl || !window.QRCode || !state.myEntry) return;
+  qrEl.innerHTML = '';
+  new window.QRCode(qrEl, {
+    text: `LADDER:${state.date}:${state.myEntry.id}`,
+    width: 128, height: 128,
+    colorDark: '#221d14', colorLight: '#f0e8d4'
+  });
+}
+
 function renderMain(fromPoll){
   const el = document.getElementById('mainArea');
   const result = myResult();
@@ -594,6 +701,7 @@ function renderMain(fromPoll){
       const btn = document.getElementById('ticketCloseBtn');
       if(btn) btn.onclick = () => { state.ticketFull = false; render(); };
     }
+    if(result.win) renderTicketQR();
     return;
   }
   if(state.draw && !state.myEntry){
@@ -739,7 +847,9 @@ function ticketHTML(result, hueColor){
         <div class="t-count">${result.count}명</div>
         <div class="t-divider"></div>
         <div class="t-row"><span>추첨 일시</span><b>${fmtDateTime(state.draw.drawnAt)}</b></div>
-        <div class="t-note">오늘(${state.date}) 자 티켓입니다. 배경 워터마크 날짜와 상단 색상 칩이 매일 바뀌니, 입장 시 오늘 날짜와 색이 맞는지 함께 확인해주세요.</div>
+        <div class="t-qr-label">입장 확인용 QR</div>
+        <div class="t-qr" id="qrcode"></div>
+        <div class="t-note">오늘(${state.date}) 자 티켓입니다. 배경 워터마크 날짜와 상단 색상 칩이 매일 바뀌니, 입장 시 오늘 날짜와 색이 맞는지 함께 확인해주세요. QR코드는 관리자가 입장할 때 스캔합니다.</div>
       </div></div>`;
   }
   return `<div class="ticket ticket-full" style="--dayhue:${hueColor}">${wm}${dayChip}${closeBtn}
@@ -772,6 +882,7 @@ function ticketCompactHTML(result, hueColor){
         <div class="t-row"><span>인원</span><b>${result.count}명</b></div>
         <div class="t-row"><span>날짜</span><b>${state.date}</b></div>
         <div class="t-row"><span>추첨 일시</span><b>${fmtDateTime(state.draw.drawnAt)}</b></div>
+        <div class="t-qr" id="qrcode"></div>
       </div></div>`;
   }
   return `<div class="ticket" style="--dayhue:${hueColor}">${wm}${dayChip}${expandBtn}
@@ -810,7 +921,15 @@ function listPanelHTML(){
 
 function renderAdmin(){
   const toggleBtn = document.getElementById('adminToggleBtn');
-  toggleBtn.onclick = () => { state.adminOpen = !state.adminOpen; render(); };
+  toggleBtn.onclick = () => {
+    state.adminOpen = !state.adminOpen;
+    if(!state.adminOpen && state.scannerOpen){
+      stopScanner();
+      state.scannerOpen = false;
+      state.scanMsg = null;
+    }
+    render();
+  };
   const el = document.getElementById('adminArea');
   if(!state.adminOpen){ el.innerHTML=''; return; }
 
@@ -829,6 +948,29 @@ function renderAdmin(){
     document.getElementById('adminPass').addEventListener('keydown', (e) => {
       if(e.key === 'Enter') tryUnlock();
     });
+    return;
+  }
+
+  if(state.scannerOpen){
+    if(document.getElementById('qrReader')){
+      const msgEl = document.getElementById('scanMsgArea');
+      if(msgEl) msgEl.innerHTML = scanMsgHTML();
+      return;
+    }
+    el.innerHTML = `<div class="admin-panel">
+      <h3>당첨자 QR 스캔</h3>
+      <div class="admin-status">카메라로 당첨 티켓의 QR을 비추면 자동으로 인식됩니다.</div>
+      <div class="qr-reader-wrap" id="qrReader"></div>
+      <div id="scanMsgArea">${scanMsgHTML()}</div>
+      <button class="btn btn-ghost small-btn" id="scannerCloseBtn" style="margin-top:10px;">스캐너 닫기</button>
+    </div>`;
+    document.getElementById('scannerCloseBtn').onclick = async () => {
+      await stopScanner();
+      state.scannerOpen = false;
+      state.scanMsg = null;
+      render();
+    };
+    startScanner();
     return;
   }
 
@@ -872,6 +1014,8 @@ function renderAdmin(){
       <button class="btn btn-danger small-btn" id="forceDrawYes" style="margin-top:6px;">예, 지금 추첨</button>
       <button class="btn btn-ghost small-btn" id="forceDrawNo" style="margin-top:6px;">취소</button>
     ` : `<button class="btn btn-danger small-btn" id="forceDrawBtn" style="margin-top:20px;" ${state.draw?'disabled':''}>${state.draw?'이미 추첨됨':'지금 즉시 추첨'}</button>`}
+
+    <button class="btn btn-ghost small-btn" id="scannerOpenBtn" style="margin-top:10px;">당첨자 QR 스캔</button>
 
     ${state.confirmReset ? `
       <div class="msg">오늘 접수·추첨 결과를 모두 삭제합니다. 진행할까요?</div>
@@ -930,6 +1074,12 @@ function renderAdmin(){
   };
   const rosterClearBtn = document.getElementById('rosterClearBtn');
   if(rosterClearBtn) rosterClearBtn.onclick = () => { clearRoster(); };
+
+  document.getElementById('scannerOpenBtn').onclick = () => {
+    state.scannerOpen = true;
+    state.scanMsg = null;
+    render();
+  };
 
   if(state.confirmForceDraw){
     document.getElementById('forceDrawYes').onclick = () => { state.confirmForceDraw = false; forceDraw(); };
