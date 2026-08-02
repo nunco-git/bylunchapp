@@ -795,7 +795,8 @@ function renderMain(fromPoll){
 
   // preserve whatever is currently typed/selected across a rebuild
   const prevCount = document.getElementById('countInput') ? document.getElementById('countInput').value : '';
-  const prevSelect = document.getElementById('teamSelect') ? document.getElementById('teamSelect').value : '';
+  const prevDept = document.getElementById('deptSelect') ? document.getElementById('deptSelect').value : '';
+  const prevTeam = document.getElementById('teamSelect') ? document.getElementById('teamSelect').value : '';
 
   if(useDropdown){
     const taken = new Set(state.teams.map(t => t.deptKey));
@@ -809,16 +810,26 @@ function renderMain(fromPoll){
     }
 
     el.dataset.view = 'form-select';
-    const selectedEntry = available.find(en => en.key === prevSelect);
-    const options = available.map(en =>
-      `<option value="${escapeHTML(en.key)}" data-max="${en.max}" ${en.key===prevSelect?'selected':''}>${escapeHTML(en.dept)} · ${escapeHTML(en.team)} (최대 ${en.max}명)</option>`
+    const depts = [...new Set(available.map(en => en.dept))];
+    const deptOptions = depts.map(d =>
+      `<option value="${escapeHTML(d)}" ${d===prevDept?'selected':''}>${escapeHTML(d)}</option>`
     ).join('');
+
+    const teamsForDept = prevDept ? available.filter(en => en.dept === prevDept) : [];
+    const selectedEntry = teamsForDept.find(en => en.key === prevTeam);
+    const teamOptions = teamsForDept.map(en =>
+      `<option value="${escapeHTML(en.key)}" data-max="${en.max}" ${en.key===prevTeam?'selected':''}>${escapeHTML(en.team)} (최대 ${en.max}명)</option>`
+    ).join('');
+    const teamPlaceholder = prevDept ? '팀을 선택하세요' : '부서를 먼저 선택하세요';
     const maxHint = selectedEntry ? `최대 ${selectedEntry.max}명까지 신청 가능합니다.` : '부서·팀을 먼저 선택하면 신청 가능 인원이 표시됩니다.';
+
     el.innerHTML = `
       <div class="card">
         <h2>부서·팀 접수</h2>
-        <div class="field"><label for="teamSelect">부서 · 팀</label>
-          <select id="teamSelect"><option value="">부서·팀을 선택하세요</option>${options}</select></div>
+        <div class="field"><label for="deptSelect">부서</label>
+          <select id="deptSelect"><option value="">부서를 선택하세요</option>${deptOptions}</select></div>
+        <div class="field"><label for="teamSelect">팀</label>
+          <select id="teamSelect" ${prevDept?'':'disabled'}><option value="">${teamPlaceholder}</option>${teamOptions}</select></div>
         <div class="field"><label for="countInput">인원수</label>
           <input type="number" id="countInput" placeholder="예: 5" min="1" ${selectedEntry?`max="${selectedEntry.max}"`:''} value="${escapeHTML(prevCount)}">
           <div class="helper" id="countHint" style="margin-top:4px;">${maxHint}</div></div>
@@ -827,8 +838,22 @@ function renderMain(fromPoll){
         <div class="helper">오늘 ${String(state.config.startHour).padStart(2,'0')}:${String(state.config.startMinute).padStart(2,'0')}부터 ${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}까지 부서·팀·인원수로 접수, 누적 ${state.config.cap}명 선착순. 마감 시 ${state.config.winCap}명 한도로 사다리 방식 무작위 추첨됩니다. 부서·팀당 한 번만, 사전에 등록된 인원 이하로만 신청할 수 있어요.</div>
       </div>`;
 
+    document.getElementById('deptSelect').addEventListener('change', (e) => {
+      const dept = e.target.value;
+      const teamSel = document.getElementById('teamSelect');
+      const countEl = document.getElementById('countInput');
+      const hintEl = document.getElementById('countHint');
+      const teams = dept ? available.filter(en => en.dept === dept) : [];
+      teamSel.disabled = !dept;
+      teamSel.innerHTML = `<option value="">${dept ? '팀을 선택하세요' : '부서를 먼저 선택하세요'}</option>` +
+        teams.map(en => `<option value="${escapeHTML(en.key)}" data-max="${en.max}">${escapeHTML(en.team)} (최대 ${en.max}명)</option>`).join('');
+      countEl.removeAttribute('max');
+      hintEl.textContent = '부서·팀을 먼저 선택하면 신청 가능 인원이 표시됩니다.';
+    });
+
     document.getElementById('teamSelect').addEventListener('change', (e) => {
-      const en = available.find(x => x.key === e.target.value);
+      const dept = document.getElementById('deptSelect').value;
+      const en = available.find(x => x.dept === dept && x.key === e.target.value);
       const countEl = document.getElementById('countInput');
       const hintEl = document.getElementById('countHint');
       if(en){
