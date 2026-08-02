@@ -257,8 +257,11 @@ let state = {
   roster: { entries: [] },
   rosterPreview: null,
   scannerOpen: false,
+  manualEntry: false,
   scanSetupErr: null,
   pwMsg: null,
+  historyMsg: null,
+  confirmHistoryReset: false,
   rosterUploadMsg: null,
   myEntry: null,
   listOpen: false,
@@ -369,6 +372,7 @@ function switchToDate(date){
   state.teams = [];
   state.draw = null;
   state.myEntry = loadMyEntryLocal(date);
+  state.manualEntry = false;
   attachDateListeners(date);
   render();
 }
@@ -395,6 +399,19 @@ async function maybeRunDraw(){
   }
 }
 
+// Weight so a team's win rate over its last 10 applications drifts toward
+// 70~80%. Below 70% -> boosted odds; above 80% -> suppressed odds; inside
+// the band (or too little history) -> neutral. This nudges the long-run
+// average, it does not guarantee every single draw lands in the band.
+function computeHistoryWeight(results){
+  if(!results || results.length < 3) return 1; // not enough history yet
+  const winRate = results.filter(Boolean).length / results.length;
+  if(winRate < 0.70) return 1 + (0.70 - winRate) * 6;   // up to ~5.2x at 0% win rate
+  if(winRate > 0.80) return 1 / (1 + (winRate - 0.80) * 10); // down to ~0.33x at 100%
+  return 1;
+}
+function historyKeyFor(team){ return team.deptKey || `freeform:${team.team}`; }
+
 async function runDraw(){
   drawInFlight = true;
   try{
@@ -407,15 +424,22 @@ async function runDraw(){
     let list = Object.entries(val).map(([id, v]) => ({ id, ...v }));
     list.sort((a,b)=>a.ts-b.ts);
 
-    const ids = list.map(t=>t.id);
-    for(let i = ids.length - 1; i > 0; i--){
-      const j = Math.floor(Math.random() * (i+1));
-      [ids[i], ids[j]] = [ids[j], ids[i]];
-    }
+    // pull each team's recent history and turn it into a selection weight
+    const histSnaps = await Promise.all(list.map(t => get(ref(db, `history/${historyKeyFor(t)}`))));
+    const weights = histSnaps.map(s => computeHistoryWeight((s.val() || {}).results || []));
+
+    // weighted random order without replacement (Efraimidis–Spirakis method):
+    // higher weight -> key tends closer to 1 -> sorts earlier -> more likely
+    // to fit inside the win cap before it runs out.
+    const ordered = list
+      .map((t, i) => ({ id: t.id, key: Math.pow(Math.random(), 1 / Math.max(weights[i], 0.0001)) }))
+      .sort((a,b) => b.key - a.key)
+      .map(o => o.id);
+
     const byId = {}; list.forEach(t => byId[t.id] = t);
     const winners = [];
     let running = 0;
-    ids.forEach(id => {
+    ordered.forEach(id => {
       const t = byId[id];
       if(running + t.count <= state.config.winCap){
         const start = running + 1;
@@ -429,28 +453,46 @@ async function runDraw(){
 
     const result = { date: state.date, drawnAt: new Date().toISOString(), winners, winTotal: running };
     await set(ref(db, `draw/${state.date}`), result);
+
+    // record this round's outcome (win or lose) into each team's rolling
+    // last-10-application history, for next time's weighting
+    const winnerIdSet = new Set(winners.map(w => w.id));
+    await Promise.all(list.map(async (t) => {
+      const histRef = ref(db, `history/${historyKeyFor(t)}`);
+      const histSnap = await get(histRef);
+      const results = ((histSnap.val() || {}).results || []).slice();
+      results.push(winnerIdSet.has(t.id));
+      while(results.length > 10) results.shift();
+      await set(histRef, { results, updatedAt: Date.now() });
+    }));
   } finally {
     drawInFlight = false;
   }
 }
 
-async function handleJoin(selector, count){
-  count = parseInt(count, 10);
+async function handleJoin(payload){
+  const count = parseInt(payload.count, 10);
   state.errorMsg = null;
 
-  const rosterEntries = (state.roster && state.roster.entries) || [];
-  const useRoster = rosterEntries.length > 0;
+  let teamName, deptKey, maxAllowed = null;
 
-  let teamName, deptKey = null, maxAllowed = null;
-  if(useRoster){
-    const entry = rosterEntries.find(en => en.key === selector);
+  if(payload.mode === 'roster'){
+    const rosterEntries = (state.roster && state.roster.entries) || [];
+    const entry = rosterEntries.find(en => en.key === payload.key);
     if(!entry){ state.errorMsg = '부서·팀을 선택해주세요.'; render(); return; }
     teamName = `${entry.dept} ${entry.team}`;
     deptKey = entry.key;
     maxAllowed = entry.max;
-  } else {
-    teamName = (selector || '').trim().slice(0, 24);
+  } else if(payload.mode === 'manual'){
+    const dept = (payload.dept || '').trim().slice(0, 24);
+    const team = (payload.team || '').trim().slice(0, 24);
+    if(!dept || !team){ state.errorMsg = '부서명과 팀명을 모두 입력해주세요.'; render(); return; }
+    teamName = `${dept} ${team}`;
+    deptKey = `manual::${dept.toLowerCase()}::${team.toLowerCase()}`;
+  } else { // 'freeform' — no roster configured at all
+    teamName = (payload.team || '').trim().slice(0, 24);
     if(!teamName){ state.errorMsg = '팀명을 입력해주세요.'; render(); return; }
+    deptKey = `freeform::${teamName.toLowerCase()}`;
   }
 
   if(!count || count < 1){ state.errorMsg = '인원수를 정확히 입력해주세요.'; render(); return; }
@@ -469,11 +511,9 @@ async function handleJoin(selector, count){
     // the dropdown already filters out taken departments in normal use)
     const teamsSnap = await get(ref(db, `teams/${state.date}`));
     const existing = Object.values(teamsSnap.val() || {});
-    const dup = useRoster
-      ? existing.find(t => t.deptKey === deptKey)
-      : existing.find(t => t.team.trim().toLowerCase() === teamName.toLowerCase());
+    const dup = existing.find(t => t.deptKey === deptKey);
     if(dup){
-      state.errorMsg = useRoster ? '이미 접수된 부서·팀입니다.' : '이미 접수된 팀명입니다. 팀당 한 번만 신청할 수 있어요.';
+      state.errorMsg = '이미 접수된 부서·팀입니다.';
       state.busy = false; render(); return;
     }
 
@@ -688,6 +728,15 @@ async function resetToday(){
   render();
 }
 
+// This is NOT date-scoped (it spans days on purpose), so the daily reset
+// above does not touch it — clearing it needs a separate, explicit action.
+async function clearHistory(){
+  await set(ref(db, 'history'), null);
+  state.pwMsg = null;
+  state.historyMsg = '당첨 이력이 초기화되었습니다.';
+  render();
+}
+
 function rangeLabel(start, end){
   return start === end ? `${start}번` : `${start}~${end}번`;
 }
@@ -769,7 +818,11 @@ function renderMain(fromPoll){
     el.innerHTML = `<div class="card">
       <h2>접수 완료 · ${escapeHTML(state.myEntry.team)} (${state.myEntry.count}명)</h2>
       <div class="pulse-wrap"><div class="pulse"></div><div class="pulse"></div><div class="pulse"></div></div>
-      <div class="waiting-txt">정원이 차거나 ${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}가 되면 자동으로 추첨됩니다.<br>이 창을 열어두시면 결과가 바로 표시돼요.</div>
+      <div class="counter-row" style="margin-top:4px;">
+        <div class="counter-num digits">${totalCount(state.teams)}<span class="total">/${state.config.cap}</span></div>
+        <div class="counter-label">현재 누적<br>신청 인원</div>
+      </div>
+      <div class="waiting-txt" style="margin-top:14px;">정원이 차거나 ${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}가 되면 자동으로 추첨됩니다.<br>이 창을 열어두시면 결과가 바로 표시돼요.</div>
     </div>`;
     return;
   }
@@ -802,10 +855,43 @@ function renderMain(fromPoll){
     const taken = new Set(state.teams.map(t => t.deptKey));
     const available = rosterEntries.filter(en => !taken.has(en.key));
 
+    if(state.manualEntry){
+      el.dataset.view = 'form-manual';
+      const prevManualDept = document.getElementById('manualDeptInput') ? document.getElementById('manualDeptInput').value : '';
+      const prevManualTeam = document.getElementById('manualTeamInput') ? document.getElementById('manualTeamInput').value : '';
+      const prevManualCount = document.getElementById('countInput') ? document.getElementById('countInput').value : '';
+      el.innerHTML = `<div class="card">
+        <h2>목록에 없는 부서·팀 접수</h2>
+        <div class="field"><label for="manualDeptInput">부서명</label>
+          <input type="text" id="manualDeptInput" placeholder="예: 신설과" maxlength="24" value="${escapeHTML(prevManualDept)}"></div>
+        <div class="field"><label for="manualTeamInput">팀명</label>
+          <input type="text" id="manualTeamInput" placeholder="예: 새싹팀" maxlength="24" value="${escapeHTML(prevManualTeam)}"></div>
+        <div class="field"><label for="countInput">인원수</label>
+          <input type="number" id="countInput" placeholder="예: 5" min="1" value="${escapeHTML(prevManualCount)}"></div>
+        <button class="btn btn-primary" id="joinBtn" ${state.busy?'disabled':''}>${state.busy?'접수 중...':'접수하기'}</button>
+        ${state.errorMsg ? `<div class="msg" id="regMsg">${escapeHTML(state.errorMsg)}</div>` : ''}
+        <div class="helper">부서 개편이나 팀명 변경 등으로 목록에 없는 경우 여기에 직접 입력해주세요. 별도 인원 상한은 없고, 전체 정원 안에서 접수됩니다. 같은 부서·팀명이 이미 접수되어 있으면 거절됩니다.</div>
+        <div class="list-toggle" id="backToDropdownBtn" style="margin-top:14px;">목록에서 선택하기</div>
+      </div>`;
+      document.getElementById('joinBtn').onclick = () => {
+        handleJoin({
+          mode: 'manual',
+          dept: document.getElementById('manualDeptInput').value,
+          team: document.getElementById('manualTeamInput').value,
+          count: document.getElementById('countInput').value
+        });
+      };
+      document.getElementById('backToDropdownBtn').onclick = () => { state.manualEntry = false; render(); };
+      return;
+    }
+
     if(available.length === 0){
       el.dataset.view = 'form-full';
       el.innerHTML = `<div class="card"><h2>선택 가능한 부서/팀이 없습니다</h2>
-        <p class="helper">등록된 부서·팀이 모두 접수되었습니다.</p></div>`;
+        <p class="helper">등록된 부서·팀이 모두 접수되었습니다.</p>
+        <div class="list-toggle" id="manualToggleBtn" style="margin-top:14px;">목록에 없는 부서·팀으로 접수하기</div>
+      </div>`;
+      document.getElementById('manualToggleBtn').onclick = () => { state.manualEntry = true; render(); };
       return;
     }
 
@@ -836,6 +922,7 @@ function renderMain(fromPoll){
         <button class="btn btn-primary" id="joinBtn" ${state.busy?'disabled':''}>${state.busy?'접수 중...':'접수하기'}</button>
         ${state.errorMsg ? `<div class="msg" id="regMsg">${escapeHTML(state.errorMsg)}</div>` : ''}
         <div class="helper">오늘 ${String(state.config.startHour).padStart(2,'0')}:${String(state.config.startMinute).padStart(2,'0')}부터 ${String(state.config.hour).padStart(2,'0')}:${String(state.config.minute).padStart(2,'0')}까지 부서·팀·인원수로 접수, 누적 ${state.config.cap}명 선착순. 마감 시 ${state.config.winCap}명 한도로 사다리 방식 무작위 추첨됩니다. 부서·팀당 한 번만, 사전에 등록된 인원 이하로만 신청할 수 있어요.</div>
+        <div class="list-toggle" id="manualToggleBtn" style="margin-top:14px;">목록에 없는 부서·팀인가요? 직접 입력</div>
       </div>`;
 
     document.getElementById('deptSelect').addEventListener('change', (e) => {
@@ -866,8 +953,13 @@ function renderMain(fromPoll){
     });
 
     document.getElementById('joinBtn').onclick = () => {
-      handleJoin(document.getElementById('teamSelect').value, document.getElementById('countInput').value);
+      handleJoin({
+        mode: 'roster',
+        key: document.getElementById('teamSelect').value,
+        count: document.getElementById('countInput').value
+      });
     };
+    document.getElementById('manualToggleBtn').onclick = () => { state.manualEntry = true; render(); };
     return;
   }
 
@@ -907,7 +999,7 @@ function renderMain(fromPoll){
     </div>`;
 
   document.getElementById('joinBtn').onclick = () => {
-    handleJoin(document.getElementById('teamInput').value, document.getElementById('countInput').value);
+    handleJoin({ mode: 'freeform', team: document.getElementById('teamInput').value, count: document.getElementById('countInput').value });
   };
 }
 
@@ -1103,6 +1195,15 @@ function renderAdmin(){
 
     <button class="btn btn-ghost small-btn" id="scannerOpenBtn" style="margin-top:10px;">당첨자 QR 스캔</button>
 
+    <h3 style="margin-top:22px;">과거 당첨 이력 가중치</h3>
+    <div class="admin-status">부서·팀별 최근 10회 신청 기록을 바탕으로, 당첨률이 70% 미만이면 이번 추첨에서 확률을 높이고 80% 초과면 낮춥니다. 이 이력은 날짜별 데이터가 아니라 계속 누적되는 값이라, "오늘 접수 초기화"로는 지워지지 않습니다.</div>
+    ${state.historyMsg ? `<div class="msg">${escapeHTML(state.historyMsg)}</div>` : ''}
+    ${state.confirmHistoryReset ? `
+      <div class="msg">모든 부서·팀의 당첨 이력을 삭제합니다. 되돌릴 수 없어요. 진행할까요?</div>
+      <button class="btn btn-danger small-btn" id="historyResetYes" style="margin-top:6px;">예, 이력 초기화</button>
+      <button class="btn btn-ghost small-btn" id="historyResetNo" style="margin-top:6px;">취소</button>
+    ` : `<button class="btn btn-ghost small-btn" id="historyResetBtn" style="margin-top:6px;">당첨 이력 초기화</button>`}
+
     ${state.confirmReset ? `
       <div class="msg">오늘 접수·추첨 결과를 모두 삭제합니다. 진행할까요?</div>
       <button class="btn btn-danger small-btn" id="resetYes" style="margin-top:6px;">예, 초기화</button>
@@ -1202,6 +1303,13 @@ function renderAdmin(){
   } else {
     const btn = document.getElementById('forceDrawBtn');
     if(btn) btn.onclick = () => { state.confirmForceDraw = true; render(); };
+  }
+
+  if(state.confirmHistoryReset){
+    document.getElementById('historyResetYes').onclick = () => { state.confirmHistoryReset = false; clearHistory(); };
+    document.getElementById('historyResetNo').onclick = () => { state.confirmHistoryReset = false; render(); };
+  } else {
+    document.getElementById('historyResetBtn').onclick = () => { state.confirmHistoryReset = true; render(); };
   }
 
   if(state.confirmReset){
